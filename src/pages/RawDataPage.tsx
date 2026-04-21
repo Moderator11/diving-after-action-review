@@ -3,7 +3,7 @@ import styled from 'styled-components';
 import { useNavigate } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
 import { useDiveSession } from '../store/DiveContext';
-import type { FitMessageGroup, FitRow } from '../types/dive';
+import type { FitMessageGroup } from '../types/dive';
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
 type SortDir = 'asc' | 'desc' | null;
@@ -18,10 +18,6 @@ function formatCell(v: unknown): string {
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
-}
-
-function isTimestamp(key: string): boolean {
-  return key.toLowerCase().includes('time') || key.toLowerCase().includes('timestamp');
 }
 
 function isDepth(key: string): boolean {

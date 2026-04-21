@@ -258,7 +258,7 @@ export function VideoOverlay({ dive }: Props) {
 
     type Pt = [number, number]; // [svgX, svgY]
     const coords: Pt[] = [];
-    let color = C.depth;
+    let color: string = C.depth;
     let baseY = 0; // area closes back to this Y
 
     if (chartType === 'depth') {
@@ -660,7 +660,7 @@ export function VideoOverlay({ dive }: Props) {
               )}
 
               {/* Corner fullscreen toggle (always visible on hover) */}
-              <FsCornerBtn onClick={toggleFullscreen} title={isFullscreen ? '전체화면 종료 (F)' : '전체화면 (F)'}>
+              <FsCornerBtn className="fs-corner-btn" onClick={toggleFullscreen} title={isFullscreen ? '전체화면 종료 (F)' : '전체화면 (F)'}>
                 {isFullscreen ? '⊡' : '⛶'}
               </FsCornerBtn>
 
@@ -914,7 +914,7 @@ const VideoWrap = styled.div<{
   )}
 
   /* Reveal corner fullscreen button on hover */
-  &:hover > [data-fs-btn] { opacity: 1; }
+  &:hover > .fs-corner-btn { opacity: 1; }
 `;
 
 const VideoEl = styled.video`
@@ -1292,7 +1292,7 @@ const SyncHint = styled.p`
 `;
 
 /* ── Fullscreen corner toggle button (shows on video hover) ── */
-const FsCornerBtn = styled.button.attrs({ 'data-fs-btn': true })`
+const FsCornerBtn = styled.button`
   position: absolute;
   top: 10px;
   right: 10px;
