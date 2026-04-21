@@ -78,10 +78,17 @@ export function VideoOverlay({ dive }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   /** syncOffset: video_time − syncOffset = data_elapsed_seconds */
   const [syncOffset, setSyncOffset] = useState(0);
+  /** Which chart to show in the fullscreen side panel */
+  type ChartType = 'depth' | 'hr' | 'rate' | 'temp';
+  const [chartType, setChartType] = useState<ChartType>('depth');
+  /** Fullscreen panel position (drag) */
+  const [panelPos, setPanelPos] = useState({ x: 14, y: 14 });
 
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const seekRef  = useRef<HTMLInputElement>(null);
-  const wrapRef  = useRef<HTMLDivElement>(null);
+  const videoRef       = useRef<HTMLVideoElement>(null);
+  const seekRef        = useRef<HTMLInputElement>(null);
+  const wrapRef        = useRef<HTMLDivElement>(null);
+  const isPanelDrag    = useRef(false);
+  const panelDragStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
 
   // ── Derived ──────────────────────────────────────────────
   const t0Ms = useMemo(
@@ -207,10 +214,132 @@ export function VideoOverlay({ dive }: Props) {
   }, []);
 
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const onFsChange = () => {
+      const entering = !!document.fullscreenElement;
+      setIsFullscreen(entering);
+      if (entering) setPanelPos({ x: 14, y: 14 }); // reset position on each entry
+    };
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
+
+  // ── Panel drag ───────────────────────────────────────────
+  const onPanelMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isPanelDrag.current = true;
+    panelDragStart.current = {
+      mx: e.clientX, my: e.clientY,
+      px: panelPos.x, py: panelPos.y,
+    };
+  }, [panelPos]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isPanelDrag.current) return;
+      setPanelPos({
+        x: panelDragStart.current.px + e.clientX - panelDragStart.current.mx,
+        y: panelDragStart.current.py + e.clientY - panelDragStart.current.my,
+      });
+    };
+    const onUp = () => { isPanelDrag.current = false; };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  // ── Panel chart path (switches with chartType) ───────────
+  const panelChart = useMemo(() => {
+    const recs = dive.records;
+    if (recs.length < 2) return { line: '', area: '', color: C.depth };
+    const totalDur = diveDuration || 1;
+
+    type Pt = [number, number]; // [svgX, svgY]
+    const coords: Pt[] = [];
+    let color = C.depth;
+    let baseY = 0; // area closes back to this Y
+
+    if (chartType === 'depth') {
+      const maxD = Math.max(dive.maxDepthM, 0.01);
+      color = C.depth; baseY = 0;
+      for (const r of downsample(recs, 600)) {
+        const x = ((r.timestamp.getTime() - t0Ms) / 1000 / totalDur) * 1000;
+        coords.push([x, (r.depthM / maxD) * 100]);
+      }
+    } else if (chartType === 'hr') {
+      const maxHR = Math.max(dive.maxHR ?? 1, 1);
+      color = C.hr; baseY = 100;
+      for (const r of downsample(recs, 600)) {
+        if (r.heartRate == null) continue;
+        const x = ((r.timestamp.getTime() - t0Ms) / 1000 / totalDur) * 1000;
+        coords.push([x, 100 - (r.heartRate / maxHR) * 100]);
+      }
+    } else if (chartType === 'rate') {
+      const maxRate = Math.max(dive.maxDescentRateMps, dive.maxAscentRateMps, 0.02);
+      color = C.descent; baseY = 100;
+      for (let i = 1; i < recs.length; i++) {
+        const r = recs[i], prev = recs[i - 1];
+        const dt = (r.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
+        if (dt <= 0) continue;
+        const rate = Math.abs((r.depthM - prev.depthM) / dt);
+        const x = ((r.timestamp.getTime() - t0Ms) / 1000 / totalDur) * 1000;
+        coords.push([x, 100 - Math.min((rate / maxRate) * 100, 100)]);
+      }
+    } else {
+      // temp
+      const temps = recs.filter(r => r.temperatureC != null).map(r => r.temperatureC as number);
+      if (temps.length === 0) return { line: '', area: '', color: C.temp };
+      const minT = temps.reduce((a, b) => Math.min(a, b), Infinity);
+      const maxT = temps.reduce((a, b) => Math.max(a, b), -Infinity);
+      const range = Math.max(maxT - minT, 0.1);
+      color = C.temp; baseY = 100;
+      for (const r of downsample(recs, 600)) {
+        if (r.temperatureC == null) continue;
+        const x = ((r.timestamp.getTime() - t0Ms) / 1000 / totalDur) * 1000;
+        coords.push([x, 100 - ((r.temperatureC - minT) / range) * 100]);
+      }
+    }
+
+    if (coords.length < 2) return { line: '', area: '', color };
+    const line = coords.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+    const area = `M ${coords[0][0].toFixed(1)} ${baseY} `
+      + coords.map(([x, y]) => `L ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ')
+      + ` L ${coords[coords.length - 1][0].toFixed(1)} ${baseY} Z`;
+    return { line, area, color };
+  }, [chartType, dive, diveDuration, t0Ms]);
+
+  // Dot position for the panel chart
+  const panelDot = useMemo(() => {
+    if (!currentRecord) return null;
+    const totalDur = diveDuration || 1;
+    const elapsed = (currentRecord.timestamp.getTime() - t0Ms) / 1000;
+    const cx = (elapsed / totalDur) * 1000;
+    let cy = 50;
+
+    if (chartType === 'depth') {
+      cy = (currentRecord.depthM / Math.max(dive.maxDepthM, 0.01)) * 100;
+    } else if (chartType === 'hr') {
+      if (currentRecord.heartRate == null) return null;
+      cy = 100 - (currentRecord.heartRate / Math.max(dive.maxHR ?? 1, 1)) * 100;
+    } else if (chartType === 'rate') {
+      const idx = dive.records.indexOf(currentRecord);
+      if (idx <= 0) return null;
+      const prev = dive.records[idx - 1];
+      const dt = (currentRecord.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
+      const rate = dt > 0 ? Math.abs((currentRecord.depthM - prev.depthM) / dt) : 0;
+      const maxRate = Math.max(dive.maxDescentRateMps, dive.maxAscentRateMps, 0.02);
+      cy = 100 - Math.min((rate / maxRate) * 100, 100);
+    } else {
+      if (currentRecord.temperatureC == null) return null;
+      const temps = dive.records.filter(r => r.temperatureC != null).map(r => r.temperatureC as number);
+      const minT = temps.reduce((a, b) => Math.min(a, b), Infinity);
+      const maxT = temps.reduce((a, b) => Math.max(a, b), -Infinity);
+      cy = 100 - ((currentRecord.temperatureC - minT) / Math.max(maxT - minT, 0.1)) * 100;
+    }
+    return { cx, cy: Math.max(0, Math.min(100, cy)) };
+  }, [chartType, currentRecord, dive, diveDuration, t0Ms]);
 
   // ── Playback ─────────────────────────────────────────────
   const togglePlay = useCallback(() => {
@@ -397,26 +526,37 @@ export function VideoOverlay({ dive }: Props) {
                 </BottomPanel>
               )}
 
-              {/* ── Fullscreen mode: compact top-left panel ── */}
+              {/* ── Fullscreen mode: draggable side panel ── */}
               {isFullscreen && (
-                <FsSidePanel>
+                <FsSidePanel style={{ left: panelPos.x, top: panelPos.y }}>
+
+                  {/* Drag handle + elapsed time */}
+                  <FsPanelHandle onMouseDown={onPanelMouseDown}>
+                    <FsElapsed>
+                      {dataStatus === 'active'
+                        ? `⏱ ${fmtTime(Math.max(0, dataElapsed))}`
+                        : dataStatus === 'before' ? '대기 중' : '완료'}
+                    </FsElapsed>
+                    <FsDragGrip>⠿</FsDragGrip>
+                  </FsPanelHandle>
+
+                  <FsPanelDivider />
+
+                  {/* Metrics 2 × 2 grid */}
                   <FsMetricsGrid $cols={dive.maxHR !== null || dive.avgTempC !== null ? 2 : 1}>
-                    {/* 수심 */}
                     <FsMetricCell>
                       <MLabel>수심</MLabel>
                       <MValueRow>
-                        <MValue $c={C.depth} style={{ fontSize: 28 }}>
+                        <MValue $c={C.depth} style={{ fontSize: 26 }}>
                           {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
                         </MValue>
                         <MUnit>m</MUnit>
                       </MValueRow>
                     </FsMetricCell>
-                    {/* 속도 */}
                     <FsMetricCell>
                       <MLabel>
                         {currentRecord && Math.abs(currentRateMps) > 0.05
-                          ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
-                          : '속도'}
+                          ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승' : '속도'}
                       </MLabel>
                       <MValueRow>
                         <MValue $c={
@@ -424,30 +564,28 @@ export function VideoOverlay({ dive }: Props) {
                           : currentRateMps > 0.05  ? C.descent
                           : currentRateMps < -0.05 ? C.ascent
                           : 'rgba(255,255,255,0.7)'
-                        } style={{ fontSize: 28 }}>
+                        } style={{ fontSize: 26 }}>
                           {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
                         </MValue>
                         <MUnit>m/s</MUnit>
                       </MValueRow>
                     </FsMetricCell>
-                    {/* 심박수 */}
                     {dive.maxHR !== null && (
                       <FsMetricCell>
                         <MLabel>심박수</MLabel>
                         <MValueRow>
-                          <MValue $c={C.hr} style={{ fontSize: 28 }}>
+                          <MValue $c={C.hr} style={{ fontSize: 26 }}>
                             {currentRecord?.heartRate != null ? currentRecord.heartRate : '--'}
                           </MValue>
                           <MUnit>bpm</MUnit>
                         </MValueRow>
                       </FsMetricCell>
                     )}
-                    {/* 수온 */}
                     {dive.avgTempC !== null && (
                       <FsMetricCell>
                         <MLabel>수온</MLabel>
                         <MValueRow>
-                          <MValue $c={C.temp} style={{ fontSize: 28 }}>
+                          <MValue $c={C.temp} style={{ fontSize: 26 }}>
                             {currentRecord?.temperatureC != null
                               ? currentRecord.temperatureC.toFixed(1) : '--'}
                           </MValue>
@@ -459,22 +597,38 @@ export function VideoOverlay({ dive }: Props) {
 
                   <FsPanelDivider />
 
-                  {/* Depth chart */}
+                  {/* Chart type tabs */}
+                  <FsChartTabs>
+                    <FsChartTab $active={chartType === 'depth'} $c={C.depth}
+                      onClick={() => setChartType('depth')}>수심</FsChartTab>
+                    <FsChartTab $active={chartType === 'rate'} $c={C.descent}
+                      onClick={() => setChartType('rate')}>속도</FsChartTab>
+                    {dive.maxHR !== null && (
+                      <FsChartTab $active={chartType === 'hr'} $c={C.hr}
+                        onClick={() => setChartType('hr')}>심박</FsChartTab>
+                    )}
+                    {dive.avgTempC !== null && (
+                      <FsChartTab $active={chartType === 'temp'} $c={C.temp}
+                        onClick={() => setChartType('temp')}>수온</FsChartTab>
+                    )}
+                  </FsChartTabs>
+
+                  {/* Switchable chart */}
                   <FsPanelChartSvg viewBox="0 0 1000 100" preserveAspectRatio="none">
                     <defs>
                       <linearGradient id="dg-fs" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={C.depth} stopOpacity="0.45" />
-                        <stop offset="100%" stopColor={C.depth} stopOpacity="0.05" />
+                        <stop offset="0%" stopColor={panelChart.color} stopOpacity="0.45" />
+                        <stop offset="100%" stopColor={panelChart.color} stopOpacity="0.04" />
                       </linearGradient>
                     </defs>
-                    {svgPaths.area && <path d={svgPaths.area} fill="url(#dg-fs)" />}
-                    {svgPaths.line && (
-                      <path d={svgPaths.line} fill="none" stroke={C.depth}
+                    {panelChart.area && <path d={panelChart.area} fill="url(#dg-fs)" />}
+                    {panelChart.line && (
+                      <path d={panelChart.line} fill="none" stroke={panelChart.color}
                         strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
                     )}
-                    {svgDotPos && (
-                      <circle cx={svgDotPos.cx} cy={svgDotPos.cy} r="7"
-                        fill={C.depth} stroke="rgba(255,255,255,0.9)"
+                    {panelDot && (
+                      <circle cx={panelDot.cx} cy={panelDot.cy} r="7"
+                        fill={panelChart.color} stroke="rgba(255,255,255,0.9)"
                         strokeWidth="2.5" vectorEffect="non-scaling-stroke"
                         style={{ transition: 'cx 0.25s ease-out, cy 0.25s ease-out' }} />
                     )}
@@ -1285,21 +1439,69 @@ const FsToggleBtn = styled.button`
 /* ── Fullscreen side panel ── */
 const FsSidePanel = styled.div`
   position: absolute;
-  top: 14px;
-  left: 14px;
-  width: 248px;
-  background: rgba(4, 8, 18, 0.82);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  /* top / left overridden by inline style (drag) */
+  width: 256px;
+  background: rgba(4, 8, 18, 0.84);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.11);
   border-radius: 14px;
-  padding: 14px;
+  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  pointer-events: none;
+  gap: 9px;
+  pointer-events: none; /* children opt-in with pointer-events: auto */
   user-select: none;
   z-index: 15;
+`;
+
+/** Drag handle — grab cursor, pointer-events enabled */
+const FsPanelHandle = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+  pointer-events: auto;
+  padding: 2px 0;
+  &:active { cursor: grabbing; }
+`;
+
+const FsElapsed = styled.span`
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.55);
+`;
+
+const FsDragGrip = styled.span`
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.22);
+  line-height: 1;
+`;
+
+const FsChartTabs = styled.div`
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+`;
+
+const FsChartTab = styled.button<{ $active: boolean; $c: string }>`
+  flex: 1;
+  padding: 4px 0;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid ${({ $active, $c }) => $active ? $c + '88' : 'rgba(255,255,255,0.08)'};
+  background: ${({ $active, $c }) => $active ? $c + '22' : 'transparent'};
+  color: ${({ $active, $c }) => $active ? $c : 'rgba(255,255,255,0.35)'};
+  &:hover {
+    color: ${({ $c }) => $c};
+    border-color: ${({ $c }) => $c + '55'};
+  }
 `;
 
 const FsMetricsGrid = styled.div<{ $cols: number }>`
