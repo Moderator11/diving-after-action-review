@@ -38,6 +38,9 @@ export default function SessionPage() {
           <Tab $active={location.pathname === '/session'} onClick={() => navigate('/session')}>
             📊 세션 요약
           </Tab>
+          <Tab $active={location.pathname === '/compare'} onClick={() => navigate('/compare')}>
+            ⚖️ 비교
+          </Tab>
           <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>
             🗃 Raw Data
           </Tab>

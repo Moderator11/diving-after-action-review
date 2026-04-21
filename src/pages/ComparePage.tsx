@@ -1,0 +1,650 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import styled from 'styled-components';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Area,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ReferenceLine,
+} from 'recharts';
+import { tokens } from '../styles/GlobalStyle';
+import { useDiveSession } from '../store/DiveContext';
+import { formatDuration, formatDate } from '../utils/parseFit';
+import type { DetectedDive } from '../types/dive';
+
+// ── Dive palette ──────────────────────────────────────────
+const PALETTE = [
+  '#06b6d4', // cyan
+  '#f97316', // orange
+  '#8b5cf6', // violet
+  '#10b981', // emerald
+  '#f43f5e', // rose
+  '#f59e0b', // amber
+  '#3b82f6', // blue
+  '#ec4899', // pink
+] as const;
+
+function diveColor(idx: number): string {
+  return PALETTE[idx % PALETTE.length];
+}
+
+// ── Data helpers ──────────────────────────────────────────
+function fmtTick(v: number): string {
+  const m = Math.floor(v / 60);
+  const s = Math.floor(v % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function buildDepthSeries(dive: DetectedDive) {
+  const t0 = dive.startTime.getTime();
+  return dive.records.map((r) => ({
+    t:     Math.round((r.timestamp.getTime() - t0) / 1000),
+    depth: parseFloat(r.depthM.toFixed(2)),
+    hr:    r.heartRate,
+  }));
+}
+
+
+// ── Main page ─────────────────────────────────────────────
+export default function ComparePage() {
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const { session } = useDiveSession();
+
+  useEffect(() => { if (!session) navigate('/'); }, [session, navigate]);
+  if (!session) return null;
+
+  const { dives } = session;
+
+  // Selected dive indices
+  const [selected, setSelected] = useState<Set<number>>(
+    new Set(dives.length >= 2 ? [0, 1] : dives.length === 1 ? [0] : []),
+  );
+
+  const toggle = (idx: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+      return next;
+    });
+  };
+
+  const selectedArr = [...selected].sort((a, b) => a - b);
+
+  // ── Build merged chart series ─────────────────────────
+  // Each selected dive produces its own keyed series.
+  // We merge into a single array indexed by "t" using a Map.
+  const depthChartData = useMemo(() => {
+    if (selectedArr.length === 0) return [];
+    const map = new Map<number, Record<string, number | null>>();
+
+    selectedArr.forEach((diveIdx) => {
+      const dive = dives[diveIdx];
+      const series = buildDepthSeries(dive);
+      series.forEach(({ t, depth, hr }) => {
+        if (!map.has(t)) map.set(t, { t });
+        const row = map.get(t)!;
+        row[`depth_${diveIdx}`] = depth;
+        if (hr != null) row[`hr_${diveIdx}`] = hr;
+      });
+    });
+
+    return [...map.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, v]) => v);
+  }, [selectedArr, dives]);
+
+  // Max depth across all selected dives
+  const maxDepth = useMemo(() => {
+    const m = Math.max(
+      ...selectedArr.map((i) => dives[i].maxDepthM),
+      5,
+    );
+    return Math.ceil(m + 1);
+  }, [selectedArr, dives]);
+
+  // Whether any selected dive has HR data
+  const hasHR = selectedArr.some((i) =>
+    dives[i].records.some((r) => r.heartRate != null),
+  );
+
+  return (
+    <Page>
+      {/* ── Top bar ── */}
+      <TopBar>
+        <BackButton onClick={() => navigate('/session')}>← 세션으로</BackButton>
+        <PageTitle>⚖️ 다이브 비교</PageTitle>
+        <Spacer />
+        <TabNav>
+          <Tab $active={false} onClick={() => navigate('/session')}>📊 세션 요약</Tab>
+          <Tab $active={false} onClick={() => navigate('/dive/0')}>🤿 다이브 상세</Tab>
+          <Tab $active={location.pathname === '/compare'}>⚖️ 비교</Tab>
+          <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
+        </TabNav>
+      </TopBar>
+
+      <Layout>
+        {/* ── Sidebar: dive selector ── */}
+        <Sidebar>
+          <SidebarTitle>다이브 선택</SidebarTitle>
+          <SidebarNote>최대 {PALETTE.length}개 동시 비교</SidebarNote>
+          <DiveList>
+            {dives.map((dive, idx) => {
+              const isSelected = selected.has(idx);
+              const color = diveColor(selectedArr.indexOf(idx));
+              return (
+                <DiveItem
+                  key={idx}
+                  $selected={isSelected}
+                  $color={isSelected ? color : tokens.border.subtle}
+                  onClick={() => toggle(idx)}
+                >
+                  <DiveItemColor $c={isSelected ? color : tokens.border.default} />
+                  <DiveItemInfo>
+                    <DiveItemTitle>다이브 #{idx + 1}</DiveItemTitle>
+                    <DiveItemMeta>
+                      {formatDate(dive.startTime)}<br />
+                      최대 {dive.maxDepthM.toFixed(1)}m · {formatDuration(dive.durationSeconds)}
+                      {dive.avgHR != null && ` · ${dive.avgHR}bpm`}
+                    </DiveItemMeta>
+                  </DiveItemInfo>
+                  <DiveCheck $selected={isSelected} $c={isSelected ? color : 'transparent'}>
+                    {isSelected && '✓'}
+                  </DiveCheck>
+                </DiveItem>
+              );
+            })}
+          </DiveList>
+
+          {/* ── Quick compare stats table ── */}
+          {selectedArr.length >= 2 && (
+            <StatsTable>
+              <SidebarTitle style={{ marginTop: 24 }}>수치 비교</SidebarTitle>
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <Th>항목</Th>
+                    {selectedArr.map((i) => (
+                      <Th key={i} style={{ color: diveColor(selectedArr.indexOf(i)) }}>
+                        #{i + 1}
+                      </Th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: '최대 수심', fmt: (d: DetectedDive) => `${d.maxDepthM.toFixed(1)}m` },
+                    { label: '총 시간',   fmt: (d: DetectedDive) => formatDuration(d.durationSeconds) },
+                    { label: '잠수 시간', fmt: (d: DetectedDive) => formatDuration(d.bottomTimeSeconds) },
+                    { label: '평균 심박', fmt: (d: DetectedDive) => d.avgHR != null ? `${d.avgHR}bpm` : '-' },
+                    { label: '최고 심박', fmt: (d: DetectedDive) => d.maxHR != null ? `${d.maxHR}bpm` : '-' },
+                    { label: '최대 하강', fmt: (d: DetectedDive) => `${d.maxDescentRateMps.toFixed(2)}m/s` },
+                    { label: '최대 상승', fmt: (d: DetectedDive) => `${d.maxAscentRateMps.toFixed(2)}m/s` },
+                    { label: '수온',      fmt: (d: DetectedDive) => d.avgTempC != null ? `${d.avgTempC}°C` : '-' },
+                  ].map(({ label, fmt }) => (
+                    <tr key={label}>
+                      <Td>{label}</Td>
+                      {selectedArr.map((i) => (
+                        <Td key={i}>{fmt(dives[i])}</Td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </StatsTable>
+          )}
+        </Sidebar>
+
+        {/* ── Main charts ── */}
+        <Charts>
+          {selectedArr.length === 0 && (
+            <EmptyState>
+              <EmptyIcon>🤿</EmptyIcon>
+              <EmptyText>왼쪽에서 비교할 다이브를 선택하세요</EmptyText>
+            </EmptyState>
+          )}
+
+          {selectedArr.length > 0 && (
+            <>
+              {/* ── Legend ── */}
+              <LegendRow>
+                {selectedArr.map((i) => (
+                  <LegendItem key={i}>
+                    <LegendDot $c={diveColor(selectedArr.indexOf(i))} />
+                    <span>다이브 #{i + 1}</span>
+                    <LegendSub>{formatDate(dives[i].startTime)}</LegendSub>
+                  </LegendItem>
+                ))}
+              </LegendRow>
+
+              {/* ── Depth comparison chart ── */}
+              <ChartCard>
+                <ChartCardHeader>
+                  <ChartCardIcon>📈</ChartCardIcon>
+                  <ChartCardTitle>수심 프로파일 비교</ChartCardTitle>
+                  <ChartCardNote>t=0 → 각 다이브 입수 시점</ChartCardNote>
+                </ChartCardHeader>
+                <ResponsiveContainer width="100%" height={320}>
+                  <ComposedChart data={depthChartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <defs>
+                      {selectedArr.map((diveIdx, ci) => (
+                        <linearGradient key={diveIdx} id={`dg_${diveIdx}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor={diveColor(ci)} stopOpacity={0.3} />
+                          <stop offset="100%" stopColor={diveColor(ci)} stopOpacity={0.02} />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
+                    <XAxis
+                      dataKey="t" type="number" domain={['dataMin', 'dataMax']}
+                      tickFormatter={fmtTick}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+                      axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      reversed domain={[0, maxDepth]}
+                      tickFormatter={(v) => `${v}m`}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44}
+                    />
+                    <Tooltip
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        return (
+                          <TtBox>
+                            <TtTime>{fmtTick(Number(label))}</TtTime>
+                            {selectedArr.map((i, ci) => {
+                              const p = payload.find((x: any) => x.dataKey === `depth_${i}`);
+                              if (!p || p.value == null) return null;
+                              return (
+                                <TtRow key={i} $c={diveColor(ci)}>
+                                  <span>다이브 #{i + 1}</span>
+                                  <strong>{Number(p.value).toFixed(1)} m</strong>
+                                </TtRow>
+                              );
+                            })}
+                          </TtBox>
+                        );
+                      }}
+                    />
+                    <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
+                    {selectedArr.map((diveIdx, ci) => (
+                      <Area
+                        key={diveIdx}
+                        dataKey={`depth_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1}`}
+                        type="monotone"
+                        stroke={diveColor(ci)}
+                        strokeWidth={2}
+                        fill={`url(#dg_${diveIdx})`}
+                        dot={false}
+                        connectNulls
+                        isAnimationActive={false}
+                        activeDot={{ r: 4, fill: diveColor(ci) }}
+                      />
+                    ))}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              {/* ── HR comparison chart ── */}
+              {hasHR && (
+                <ChartCard>
+                  <ChartCardHeader>
+                    <ChartCardIcon>❤️</ChartCardIcon>
+                    <ChartCardTitle>심박수 비교</ChartCardTitle>
+                    <ChartCardNote>t=0 → 각 다이브 입수 시점</ChartCardNote>
+                  </ChartCardHeader>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <ComposedChart data={depthChartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                      <defs>
+                        {selectedArr.map((diveIdx, ci) => (
+                          <linearGradient key={diveIdx} id={`hrg_${diveIdx}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%"   stopColor={diveColor(ci)} stopOpacity={0.25} />
+                            <stop offset="100%" stopColor={diveColor(ci)} stopOpacity={0.01} />
+                          </linearGradient>
+                        ))}
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
+                      <XAxis
+                        dataKey="t" type="number" domain={['dataMin', 'dataMax']}
+                        tickFormatter={fmtTick}
+                        tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+                        axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
+                      />
+                      <YAxis
+                        domain={[40, 200]}
+                        tickFormatter={(v) => `${v}`}
+                        tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36}
+                      />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload?.length) return null;
+                          return (
+                            <TtBox>
+                              <TtTime>{fmtTick(Number(label))}</TtTime>
+                              {selectedArr.map((i, ci) => {
+                                const p = payload.find((x: any) => x.dataKey === `hr_${i}`);
+                                if (!p || p.value == null) return null;
+                                return (
+                                  <TtRow key={i} $c={diveColor(ci)}>
+                                    <span>다이브 #{i + 1}</span>
+                                    <strong>{p.value} bpm</strong>
+                                  </TtRow>
+                                );
+                              })}
+                            </TtBox>
+                          );
+                        }}
+                      />
+                      <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
+                      {selectedArr.map((diveIdx, ci) => (
+                        <Line
+                          key={diveIdx}
+                          dataKey={`hr_${diveIdx}`}
+                          name={`다이브 #${diveIdx + 1} bpm`}
+                          type="monotone"
+                          stroke={diveColor(ci)}
+                          strokeWidth={1.5}
+                          dot={false}
+                          connectNulls
+                          isAnimationActive={false}
+                          activeDot={{ r: 3, fill: diveColor(ci) }}
+                        />
+                      ))}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <AxisLabel>bpm</AxisLabel>
+                </ChartCard>
+              )}
+
+              {/* ── Duration bar comparison ── */}
+              <ChartCard>
+                <ChartCardHeader>
+                  <ChartCardIcon>📊</ChartCardIcon>
+                  <ChartCardTitle>주요 지표 비교</ChartCardTitle>
+                </ChartCardHeader>
+                <MetricBars>
+                  {(
+                    [
+                      { label: '최대 수심 (m)',  key: 'maxDepthM',          fmt: (v: number) => `${v.toFixed(1)}m`,   max: Math.max(...selectedArr.map((i) => dives[i].maxDepthM)) },
+                      { label: '잠수 시간 (분)',  key: 'bottomTimeSeconds',  fmt: (v: number) => formatDuration(v),   max: Math.max(...selectedArr.map((i) => dives[i].bottomTimeSeconds)) },
+                      { label: '평균 심박 (bpm)', key: 'avgHR',             fmt: (v: number | null) => v != null ? `${v}bpm` : '-', max: Math.max(...selectedArr.map((i) => dives[i].avgHR ?? 0)) },
+                    ] as const
+                  ).map(({ label, key, fmt, max }) => (
+                    <MetricBarRow key={key}>
+                      <MetricBarLabel>{label}</MetricBarLabel>
+                      <MetricBarBars>
+                        {selectedArr.map((i, ci) => {
+                          const raw = (dives[i] as any)[key] as number | null;
+                          const pct = raw != null && max > 0 ? (raw / max) * 100 : 0;
+                          return (
+                            <MetricBarItem key={i}>
+                              <MetricBarTrack>
+                                <MetricBarFill $pct={pct} $c={diveColor(ci)} />
+                              </MetricBarTrack>
+                              <MetricBarValue $c={diveColor(ci)}>
+                                {raw != null ? fmt(raw as number) : '-'}
+                              </MetricBarValue>
+                              <MetricBarName>#{i + 1}</MetricBarName>
+                            </MetricBarItem>
+                          );
+                        })}
+                      </MetricBarBars>
+                    </MetricBarRow>
+                  ))}
+                </MetricBars>
+              </ChartCard>
+            </>
+          )}
+        </Charts>
+      </Layout>
+    </Page>
+  );
+}
+
+/* ── Styled components ──────────────────────────────────── */
+const Page = styled.div`
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: ${tokens.bg.base};
+`;
+
+const TopBar = styled.header`
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 32px;
+  background: ${tokens.bg.base}ee;
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid ${tokens.border.subtle};
+`;
+
+const BackButton = styled.button`
+  font-size: 13px; color: ${tokens.text.secondary};
+  background: ${tokens.bg.surface}; border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.md}; padding: 7px 14px; white-space: nowrap;
+  transition: all 0.2s;
+  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
+`;
+
+const PageTitle = styled.h1`
+  font-size: 15px; font-weight: 700; color: ${tokens.text.primary};
+`;
+
+const Spacer = styled.div` flex: 1; `;
+
+const TabNav = styled.div`
+  display: flex; align-items: center; gap: 4px;
+  background: ${tokens.bg.elevated}; border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.md}; padding: 3px;
+`;
+
+const Tab = styled.button<{ $active: boolean }>`
+  font-size: 12px;
+  font-weight: ${({ $active }) => ($active ? '600' : '400')};
+  padding: 5px 14px; border-radius: 7px;
+  color: ${({ $active }) => ($active ? tokens.text.primary : tokens.text.muted)};
+  background: ${({ $active }) => ($active ? tokens.bg.surface : 'transparent')};
+  border: ${({ $active }) => ($active ? `1px solid ${tokens.border.default}` : '1px solid transparent')};
+  transition: all 0.15s; white-space: nowrap;
+  &:hover { color: ${tokens.text.primary}; }
+`;
+
+const Layout = styled.div`
+  display: flex; flex: 1; gap: 0;
+  max-width: 1400px; width: 100%; margin: 0 auto;
+  padding: 28px 24px 60px;
+  gap: 24px;
+  @media (max-width: 900px) { flex-direction: column; }
+`;
+
+const Sidebar = styled.aside`
+  width: 280px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 4px;
+`;
+
+const SidebarTitle = styled.h2`
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: ${tokens.text.muted};
+  margin-bottom: 6px;
+`;
+
+const SidebarNote = styled.p`
+  font-size: 11px; color: ${tokens.text.muted}; margin-bottom: 8px;
+`;
+
+const DiveList = styled.div`
+  display: flex; flex-direction: column; gap: 6px;
+`;
+
+const DiveItem = styled.div<{ $selected: boolean; $color: string }>`
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: ${tokens.radius.md};
+  border: 1px solid ${({ $selected, $color }) => $selected ? $color + '60' : tokens.border.subtle};
+  background: ${({ $selected, $color }) => $selected ? $color + '0d' : tokens.bg.surface};
+  cursor: pointer; transition: all 0.15s;
+  &:hover { border-color: ${({ $color }) => $color}; }
+`;
+
+const DiveItemColor = styled.div<{ $c: string }>`
+  width: 4px; height: 36px; border-radius: 2px;
+  background: ${({ $c }) => $c}; flex-shrink: 0;
+`;
+
+const DiveItemInfo = styled.div`
+  flex: 1; overflow: hidden;
+`;
+
+const DiveItemTitle = styled.div`
+  font-size: 13px; font-weight: 600; color: ${tokens.text.primary};
+`;
+
+const DiveItemMeta = styled.div`
+  font-size: 11px; color: ${tokens.text.muted}; line-height: 1.5; margin-top: 2px;
+`;
+
+const DiveCheck = styled.div<{ $selected: boolean; $c: string }>`
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1.5px solid ${({ $c, $selected }) => $selected ? $c : tokens.border.subtle};
+  background: ${({ $c, $selected }) => $selected ? $c : 'transparent'};
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: ${tokens.bg.base};
+  flex-shrink: 0; transition: all 0.15s;
+`;
+
+const StatsTable = styled.div`
+  margin-top: 4px;
+`;
+
+const Th = styled.th`
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: ${tokens.text.muted};
+  text-align: left; padding: 6px 8px;
+  border-bottom: 1px solid ${tokens.border.subtle};
+`;
+
+const Td = styled.td`
+  font-size: 12px; color: ${tokens.text.secondary};
+  padding: 6px 8px; border-bottom: 1px solid ${tokens.border.subtle};
+  &:first-child { color: ${tokens.text.muted}; font-size: 11px; }
+`;
+
+const Charts = styled.main`
+  flex: 1; display: flex; flex-direction: column; gap: 20px; min-width: 0;
+`;
+
+const EmptyState = styled.div`
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px;
+  padding: 80px 0; text-align: center;
+`;
+
+const EmptyIcon = styled.div` font-size: 48px; `;
+
+const EmptyText = styled.p`
+  font-size: 15px; color: ${tokens.text.muted};
+`;
+
+const LegendRow = styled.div`
+  display: flex; flex-wrap: wrap; gap: 16px;
+`;
+
+const LegendItem = styled.div`
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: ${tokens.text.secondary};
+`;
+
+const LegendDot = styled.span<{ $c: string }>`
+  display: inline-block; width: 10px; height: 10px;
+  border-radius: 50%; background: ${({ $c }) => $c};
+`;
+
+const LegendSub = styled.span`
+  font-size: 11px; color: ${tokens.text.muted};
+`;
+
+const ChartCard = styled.div`
+  background: ${tokens.bg.surface}; border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.lg}; padding: 20px 24px 16px;
+`;
+
+const ChartCardHeader = styled.div`
+  display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
+`;
+
+const ChartCardIcon = styled.span` font-size: 16px; line-height: 1; `;
+
+const ChartCardTitle = styled.h2`
+  font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: ${tokens.text.secondary};
+`;
+
+const ChartCardNote = styled.span`
+  font-size: 11px; color: ${tokens.text.muted}; margin-left: 8px;
+`;
+
+const AxisLabel = styled.div`
+  text-align: right; font-size: 10px; color: ${tokens.text.muted};
+  margin-top: 4px; padding-right: 4px; opacity: 0.6; letter-spacing: 0.04em;
+`;
+
+const TtBox = styled.div`
+  background: ${tokens.bg.elevated}; border: 1px solid ${tokens.border.default};
+  border-radius: ${tokens.radius.md}; padding: 10px 14px;
+  font-size: 12px; box-shadow: ${tokens.shadow.card};
+`;
+
+const TtTime = styled.div`
+  color: ${tokens.text.muted}; margin-bottom: 6px; font-size: 11px;
+`;
+
+const TtRow = styled.div<{ $c: string }>`
+  display: flex; justify-content: space-between; gap: 16px;
+  color: ${({ $c }) => $c}; line-height: 1.8;
+`;
+
+// ── Metric bar chart ──────────────────────────────────────
+const MetricBars = styled.div`
+  display: flex; flex-direction: column; gap: 20px;
+`;
+
+const MetricBarRow = styled.div``;
+
+const MetricBarLabel = styled.div`
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: ${tokens.text.muted}; margin-bottom: 8px;
+`;
+
+const MetricBarBars = styled.div`
+  display: flex; flex-direction: column; gap: 6px;
+`;
+
+const MetricBarItem = styled.div`
+  display: flex; align-items: center; gap: 10px;
+`;
+
+const MetricBarTrack = styled.div`
+  flex: 1; height: 8px; border-radius: 4px;
+  background: ${tokens.bg.elevated}; overflow: hidden;
+`;
+
+const MetricBarFill = styled.div<{ $pct: number; $c: string }>`
+  height: 100%; border-radius: 4px;
+  width: ${({ $pct }) => $pct}%;
+  background: ${({ $c }) => $c};
+  transition: width 0.4s ease;
+`;
+
+const MetricBarValue = styled.div<{ $c: string }>`
+  font-size: 13px; font-weight: 600; color: ${({ $c }) => $c};
+  min-width: 60px; text-align: right;
+`;
+
+const MetricBarName = styled.div`
+  font-size: 11px; color: ${tokens.text.muted}; min-width: 28px;
+`;

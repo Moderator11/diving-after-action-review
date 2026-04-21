@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import styled from 'styled-components';
 import {
@@ -15,7 +15,7 @@ import {
 import { tokens } from '../styles/GlobalStyle';
 import { useDiveSession } from '../store/DiveContext';
 import { formatDuration, formatDate } from '../utils/parseFit';
-import type { DetectedDive } from '../types/dive';
+import type { DetectedDive, DiveRecord, DiveSession } from '../types/dive';
 import { VideoOverlay } from '../components/VideoOverlay';
 
 // ── Colour tokens ─────────────────────────────────────────
@@ -26,6 +26,8 @@ const C = {
   descent: '#f97316',                // orange
   ascent:  '#10b981',                // emerald
 } as const;
+
+const PAD_OPTIONS = [0, 1, 3, 5] as const;
 
 // ── Chart point types ─────────────────────────────────────
 interface DepthPoint { t: number; depth: number; hr: number | null; }
@@ -46,14 +48,140 @@ function StatBadge({ label, value, unit, color }: {
   );
 }
 
-// ── Custom tooltip ────────────────────────────────────────
+function hrStatus(hr: number): { label: string; color: string } {
+  if (hr < 70)  return { label: '안정', color: tokens.accent.teal };
+  if (hr < 90)  return { label: '보통', color: tokens.accent.cyan };
+  if (hr < 110) return { label: '상승', color: '#f59e0b' };
+  return           { label: '높음', color: C.hr };
+}
+
+// ── DiveSummaryCard ───────────────────────────────────────
+function DiveSummaryCard({
+  dive,
+  diveIdx,
+  session,
+}: {
+  dive: DetectedDive;
+  diveIdx: number;
+  session: DiveSession;
+}) {
+  const diveEndTime  = dive.records[dive.records.length - 1].timestamp;
+  const nextDive     = session.dives[diveIdx + 1];
+  const prevDive     = diveIdx > 0 ? session.dives[diveIdx - 1] : undefined;
+
+  // Surface intervals
+  const surfaceAfter: number | null = nextDive
+    ? (nextDive.startTime.getTime() - diveEndTime.getTime()) / 1000
+    : null;
+  const surfaceBefore: number | null = prevDive
+    ? (dive.startTime.getTime() -
+       prevDive.records[prevDive.records.length - 1].timestamp.getTime()) / 1000
+    : null;
+
+  // Pre-dive HR: last 3 min before dive start
+  const diveStartMs = dive.startTime.getTime();
+  const preDiveHRs  = session.records
+    .filter((r) => {
+      const t = r.timestamp.getTime();
+      return t >= diveStartMs - 3 * 60_000 && t < diveStartMs && r.heartRate != null;
+    })
+    .map((r) => r.heartRate as number);
+  const preDiveAvgHR = preDiveHRs.length > 0
+    ? Math.round(preDiveHRs.reduce((a, b) => a + b, 0) / preDiveHRs.length)
+    : null;
+
+  // Post-dive HR: first 3 min after dive end
+  const diveEndMs  = diveEndTime.getTime();
+  const postDiveHRs = session.records
+    .filter((r) => {
+      const t = r.timestamp.getTime();
+      return t > diveEndMs && t <= diveEndMs + 3 * 60_000 && r.heartRate != null;
+    })
+    .map((r) => r.heartRate as number);
+  const postDiveAvgHR = postDiveHRs.length > 0
+    ? Math.round(postDiveHRs.reduce((a, b) => a + b, 0) / postDiveHRs.length)
+    : null;
+
+  // Narrative
+  const parts: string[] = [
+    `최대 ${dive.maxDepthM.toFixed(1)}m`,
+    `잠수 시간 ${formatDuration(dive.bottomTimeSeconds)}`,
+  ];
+  if (dive.avgHR != null)  parts.push(`심박 평균 ${dive.avgHR}bpm`);
+  if (surfaceAfter != null) parts.push(`다음 다이브까지 ${formatDuration(surfaceAfter)}`);
+
+  return (
+    <SummaryCard>
+      <SummaryHeader>
+        <SummaryIcon>📋</SummaryIcon>
+        <SummaryTitle>이 다이브 요약</SummaryTitle>
+      </SummaryHeader>
+      <SummaryNarrative>{parts.join(' · ')}</SummaryNarrative>
+      <SummaryMetrics>
+        {surfaceBefore != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>전 표면 인터벌</SummaryMetricLabel>
+            <SummaryMetricValue>{formatDuration(surfaceBefore)}</SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {preDiveAvgHR != null && (() => {
+          const s = hrStatus(preDiveAvgHR);
+          return (
+            <SummaryMetric>
+              <SummaryMetricLabel>입수 전 심박</SummaryMetricLabel>
+              <SummaryMetricValue $c={C.hr}>
+                {preDiveAvgHR} <SummaryBadge $c={s.color}>{s.label}</SummaryBadge>
+              </SummaryMetricValue>
+            </SummaryMetric>
+          );
+        })()}
+        {dive.avgHR != null && (() => {
+          const s = hrStatus(dive.avgHR);
+          return (
+            <SummaryMetric>
+              <SummaryMetricLabel>다이브 평균 심박</SummaryMetricLabel>
+              <SummaryMetricValue $c={C.hr}>
+                {dive.avgHR} <SummaryBadge $c={s.color}>{s.label}</SummaryBadge>
+              </SummaryMetricValue>
+            </SummaryMetric>
+          );
+        })()}
+        {postDiveAvgHR != null && (() => {
+          const s = hrStatus(postDiveAvgHR);
+          return (
+            <SummaryMetric>
+              <SummaryMetricLabel>출수 후 심박</SummaryMetricLabel>
+              <SummaryMetricValue $c={C.hr}>
+                {postDiveAvgHR} <SummaryBadge $c={s.color}>{s.label}</SummaryBadge>
+              </SummaryMetricValue>
+            </SummaryMetric>
+          );
+        })()}
+        {dive.avgTempC != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>평균 수온</SummaryMetricLabel>
+            <SummaryMetricValue $c={C.temp}>{dive.avgTempC}°C</SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {surfaceAfter != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>후 표면 인터벌</SummaryMetricLabel>
+            <SummaryMetricValue>{formatDuration(surfaceAfter)}</SummaryMetricValue>
+          </SummaryMetric>
+        )}
+      </SummaryMetrics>
+    </SummaryCard>
+  );
+}
+
+// ── Custom tooltips ───────────────────────────────────────
 const DepthTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   const depth = payload.find((p: any) => p.dataKey === 'depth');
   const hr    = payload.find((p: any) => p.dataKey === 'hr');
   return (
     <TtBox>
-      <TtTime>{Number(label).toFixed(0)}초</TtTime>
+      <TtTime>{fmtTick(Number(label))}</TtTime>
       {depth && <TtRow $c={C.depth}><span>수심</span><strong>{depth.value.toFixed(1)} m</strong></TtRow>}
       {hr && hr.value != null && <TtRow $c={C.hr}><span>심박수</span><strong>{hr.value} bpm</strong></TtRow>}
     </TtBox>
@@ -66,7 +194,7 @@ const RateTooltip = ({ active, payload, label }: any) => {
   const asc  = payload.find((p: any) => p.dataKey === 'asc');
   return (
     <TtBox>
-      <TtTime>{Number(label).toFixed(0)}초</TtTime>
+      <TtTime>{fmtTick(Number(label))}</TtTime>
       {desc && desc.value > 0 && <TtRow $c={C.descent}><span>하강</span><strong>{desc.value.toFixed(2)} m/s</strong></TtRow>}
       {asc  && asc.value  > 0 && <TtRow $c={C.ascent}><span>상승</span><strong>{asc.value.toFixed(2)} m/s</strong></TtRow>}
     </TtBox>
@@ -78,21 +206,52 @@ const TempTooltip = ({ active, payload, label }: any) => {
   const temp = payload.find((p: any) => p.dataKey === 'temp');
   return (
     <TtBox>
-      <TtTime>{Number(label).toFixed(0)}초</TtTime>
+      <TtTime>{fmtTick(Number(label))}</TtTime>
       {temp && temp.value != null && <TtRow $c={C.temp}><span>수온</span><strong>{temp.value.toFixed(1)} °C</strong></TtRow>}
     </TtBox>
   );
 };
 
+function fmtTick(v: number): string {
+  const sign = v < 0 ? '-' : '';
+  const abs  = Math.abs(v);
+  const m    = Math.floor(abs / 60);
+  const s    = Math.floor(abs % 60);
+  return `${sign}${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ── Pad toggle sub-component ─────────────────────────────
+function PadToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <PadGroup>
+      <PadLabel>{label}</PadLabel>
+      {PAD_OPTIONS.map((opt) => (
+        <PadBtn key={opt} $active={value === opt} onClick={() => onChange(opt)}>
+          {opt === 0 ? '끄기' : `${opt}분`}
+        </PadBtn>
+      ))}
+    </PadGroup>
+  );
+}
+
 // ── Chart sub-component ───────────────────────────────────
-function ChartCard({ title, icon, children }: {
-  title: string; icon: string; children: React.ReactNode;
+function ChartCard({ title, icon, children, controls }: {
+  title: string; icon: string; children: React.ReactNode; controls?: React.ReactNode;
 }) {
   return (
     <Card>
       <CardHeader>
-        <CardIcon>{icon}</CardIcon>
+        <CardIconEl>{icon}</CardIconEl>
         <CardTitle>{title}</CardTitle>
+        {controls && <CardControls>{controls}</CardControls>}
       </CardHeader>
       {children}
     </Card>
@@ -105,6 +264,9 @@ export default function DivePage() {
   const location = useLocation();
   const { id } = useParams<{ id: string }>();
   const { session } = useDiveSession();
+
+  const [prePad,  setPrePad]  = useState(0);
+  const [postPad, setPostPad] = useState(0);
 
   useEffect(() => { if (!session) navigate('/'); }, [session, navigate]);
   if (!session) return null;
@@ -124,44 +286,54 @@ export default function DivePage() {
   }
 
   const totalDives = session.dives.length;
+  const t0Ms       = dive.startTime.getTime();
+  const diveEndMs  = dive.records[dive.records.length - 1].timestamp.getTime();
+  const diveDurSec = Math.round((diveEndMs - t0Ms) / 1000);
+
+  // ── Extended records (pre/post pad) ───────────────────
+  const extendedRecs = useMemo<DiveRecord[]>(() => {
+    if (prePad === 0 && postPad === 0) return dive.records;
+    const from = t0Ms  - prePad  * 60_000;
+    const to   = diveEndMs + postPad * 60_000;
+    return session.records.filter((r) => {
+      const t = r.timestamp.getTime();
+      return t >= from && t <= to;
+    });
+  }, [prePad, postPad, dive, session.records, t0Ms, diveEndMs]);
+
+  const showPadLines = prePad > 0 || postPad > 0;
 
   // ── Chart data ──────────────────────────────────────────
   const depthData = useMemo<DepthPoint[]>(() => {
-    const recs = dive.records;
-    const t0 = recs[0].timestamp.getTime();
-    return recs.map((r) => ({
-      t: Math.round((r.timestamp.getTime() - t0) / 1000),
+    return extendedRecs.map((r) => ({
+      t:     Math.round((r.timestamp.getTime() - t0Ms) / 1000),
       depth: parseFloat(r.depthM.toFixed(2)),
-      hr: r.heartRate,
+      hr:    r.heartRate,
     }));
-  }, [dive]);
+  }, [extendedRecs, t0Ms]);
 
   const rateData = useMemo<RatePoint[]>(() => {
-    const recs = dive.records;
-    const t0 = recs[0].timestamp.getTime();
-    return recs.map((r, i) => {
-      const t = Math.round((r.timestamp.getTime() - t0) / 1000);
+    return extendedRecs.map((r, i) => {
+      const t = Math.round((r.timestamp.getTime() - t0Ms) / 1000);
       if (i === 0) return { t, desc: 0, asc: 0 };
-      const dt = (r.timestamp.getTime() - recs[i - 1].timestamp.getTime()) / 1000;
-      const rateMps = dt > 0 ? (r.depthM - recs[i - 1].depthM) / dt : 0; // m/s
+      const dt = (r.timestamp.getTime() - extendedRecs[i - 1].timestamp.getTime()) / 1000;
+      const rateMps = dt > 0 ? (r.depthM - extendedRecs[i - 1].depthM) / dt : 0;
       return {
         t,
         desc: rateMps >  0.02 ? parseFloat(rateMps.toFixed(2)) : 0,
         asc:  rateMps < -0.02 ? parseFloat(Math.abs(rateMps).toFixed(2)) : 0,
       };
     });
-  }, [dive]);
+  }, [extendedRecs, t0Ms]);
 
   const tempData = useMemo<TempPoint[]>(() => {
-    const recs = dive.records;
-    const t0 = recs[0].timestamp.getTime();
-    return recs
+    return extendedRecs
       .filter((r) => r.temperatureC !== null)
       .map((r) => ({
-        t: Math.round((r.timestamp.getTime() - t0) / 1000),
+        t:    Math.round((r.timestamp.getTime() - t0Ms) / 1000),
         temp: r.temperatureC,
       }));
-  }, [dive]);
+  }, [extendedRecs, t0Ms]);
 
   const hasTemp = tempData.length > 0;
   const maxDepth = Math.ceil(dive.maxDepthM + 1);
@@ -174,19 +346,33 @@ export default function DivePage() {
     : 40;
 
   const maxRate = useMemo(() => {
-    const m = Math.max(
-      ...rateData.map((d) => Math.max(d.desc, d.asc)),
-      5,
-    );
+    const m = Math.max(...rateData.map((d) => Math.max(d.desc, d.asc)), 5);
     return Math.ceil(m / 5) * 5;
   }, [rateData]);
 
-  /** Format elapsed seconds as m:ss (e.g. 0:05, 1:30, 2:45) */
-  const xTickFormatter = (v: number) => {
-    const m = Math.floor(v / 60);
-    const s = Math.floor(v % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
+  const handlePrePad  = useCallback((v: number) => setPrePad(v),  []);
+  const handlePostPad = useCallback((v: number) => setPostPad(v), []);
+
+  // ── Shared chart axes ──────────────────────────────────
+  const sharedXAxis = (
+    <XAxis
+      dataKey="t"
+      type="number"
+      domain={['dataMin', 'dataMax']}
+      tickFormatter={fmtTick}
+      tick={{ fill: tokens.text.muted, fontSize: 11 }}
+      tickLine={false}
+      axisLine={{ stroke: tokens.border.subtle }}
+      interval="preserveStartEnd"
+    />
+  );
+
+  const padControls = (
+    <PadControls>
+      <PadToggle label="입수 전" value={prePad}  onChange={handlePrePad}  />
+      <PadToggle label="입수 후" value={postPad} onChange={handlePostPad} />
+    </PadControls>
+  );
 
   return (
     <Page>
@@ -203,6 +389,7 @@ export default function DivePage() {
         <TabNav>
           <Tab $active={false} onClick={() => navigate('/session')}>📊 세션 요약</Tab>
           <Tab $active={true}  onClick={() => {}}>🤿 다이브 상세</Tab>
+          <Tab $active={false} onClick={() => navigate('/compare')}>⚖️ 비교</Tab>
           <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
         </TabNav>
       </TopBar>
@@ -210,20 +397,17 @@ export default function DivePage() {
       <Content>
         {/* ── Dive navigation ── */}
         <DiveNav>
-          <NavButton
-            disabled={diveIdx <= 0}
-            onClick={() => navigate(`/dive/${diveIdx - 1}`)}
-          >
+          <NavButton disabled={diveIdx <= 0} onClick={() => navigate(`/dive/${diveIdx - 1}`)}>
             ‹ 이전
           </NavButton>
           <DiveCounter>{diveIdx + 1} / {totalDives}</DiveCounter>
-          <NavButton
-            disabled={diveIdx >= totalDives - 1}
-            onClick={() => navigate(`/dive/${diveIdx + 1}`)}
-          >
+          <NavButton disabled={diveIdx >= totalDives - 1} onClick={() => navigate(`/dive/${diveIdx + 1}`)}>
             다음 ›
           </NavButton>
         </DiveNav>
+
+        {/* ── Summary card ── */}
+        <DiveSummaryCard dive={dive} diveIdx={diveIdx} session={session} />
 
         {/* ── Video overlay ── */}
         <VideoOverlay dive={dive} />
@@ -251,11 +435,18 @@ export default function DivePage() {
           )}
         </StatsBar>
 
-        {/* ── Depth + HR chart ── */}
-        <ChartCard title="수심 프로파일" icon="📈">
+        {/* ── Depth + HR chart (with pre/post pad controls) ── */}
+        <ChartCard title="수심 프로파일" icon="📈" controls={padControls}>
           <ChartLegend>
             <LegDot $c={C.depth} /> 수심 &nbsp;
             <LegDot $c={C.hr} /> 심박수
+            {showPadLines && (
+              <>
+                &nbsp;&nbsp;
+                <LegLine $c={tokens.accent.cyan} />
+                <span style={{ color: tokens.text.muted, fontSize: 11 }}>입수 / 출수</span>
+              </>
+            )}
           </ChartLegend>
           <ResponsiveContainer width="100%" height={280}>
             <ComposedChart data={depthData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
@@ -266,10 +457,7 @@ export default function DivePage() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']}
-                tickFormatter={xTickFormatter}
-                tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd" />
+              {sharedXAxis}
               <YAxis yAxisId="d" orientation="left" reversed domain={[0, maxDepth]}
                 tickFormatter={(v) => `${v}m`}
                 tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44} />
@@ -277,6 +465,21 @@ export default function DivePage() {
                 tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
               <Tooltip content={<DepthTooltip />} />
               <ReferenceLine yAxisId="d" y={0} stroke={tokens.border.default} strokeDasharray="4 4" />
+              {/* Dive start / end reference lines when pads are active */}
+              {showPadLines && (
+                <ReferenceLine
+                  yAxisId="d" x={0}
+                  stroke={tokens.accent.cyan} strokeDasharray="4 3" strokeWidth={1.5}
+                  label={{ value: '입수', position: 'insideTopRight', fill: tokens.accent.cyan, fontSize: 10 }}
+                />
+              )}
+              {showPadLines && (
+                <ReferenceLine
+                  yAxisId="d" x={diveDurSec}
+                  stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5}
+                  label={{ value: '출수', position: 'insideTopLeft', fill: tokens.accent.teal, fontSize: 10 }}
+                />
+              )}
               <Area yAxisId="d" dataKey="depth" type="monotone"
                 stroke={C.depth} strokeWidth={2} fill="url(#dg)"
                 dot={false} activeDot={{ r: 4, fill: C.depth }} isAnimationActive={false} />
@@ -306,14 +509,16 @@ export default function DivePage() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-              <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']}
-                tickFormatter={xTickFormatter}
-                tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd" />
+              {sharedXAxis}
               <YAxis domain={[0, maxRate]}
-                tickFormatter={(v) => `${v}`}
                 tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
               <Tooltip content={<RateTooltip />} />
+              {showPadLines && (
+                <ReferenceLine x={0}         stroke={tokens.accent.cyan} strokeDasharray="4 3" strokeWidth={1.5} />
+              )}
+              {showPadLines && (
+                <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5} />
+              )}
               <Area dataKey="desc" type="monotone"
                 stroke={C.descent} strokeWidth={1.5} fill="url(#descGrad)"
                 dot={false} isAnimationActive={false} />
@@ -337,22 +542,27 @@ export default function DivePage() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-                <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']}
-                  tickFormatter={xTickFormatter}
-                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                  axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd" />
-                <YAxis domain={[40, 180]} tickFormatter={(v) => `${v}`}
+                {sharedXAxis}
+                <YAxis domain={[40, 180]}
                   tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
                 <Tooltip content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
                   const hr = payload[0];
                   return (
                     <TtBox>
-                      <TtTime>{Number(label).toFixed(0)}초</TtTime>
+                      <TtTime>{fmtTick(Number(label))}</TtTime>
                       <TtRow $c={C.hr}><span>심박수</span><strong>{hr.value} bpm</strong></TtRow>
                     </TtBox>
                   );
                 }} />
+                {showPadLines && (
+                  <ReferenceLine x={0}         stroke={tokens.accent.cyan} strokeDasharray="4 3" strokeWidth={1.5}
+                    label={{ value: '입수', position: 'insideTopRight', fill: tokens.accent.cyan, fontSize: 10 }} />
+                )}
+                {showPadLines && (
+                  <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5}
+                    label={{ value: '출수', position: 'insideTopLeft', fill: tokens.accent.teal, fontSize: 10 }} />
+                )}
                 <Area dataKey="hr" type="monotone"
                   stroke={C.hr} strokeWidth={1.5} fill="url(#hrGrad)"
                   dot={false} connectNulls isAnimationActive={false} />
@@ -374,13 +584,16 @@ export default function DivePage() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-                <XAxis dataKey="t" type="number" domain={['dataMin','dataMax']}
-                  tickFormatter={xTickFormatter}
-                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                  axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd" />
+                {sharedXAxis}
                 <YAxis domain={[tempMin, tempMax]} tickFormatter={(v) => `${v}°`}
                   tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
                 <Tooltip content={<TempTooltip />} />
+                {showPadLines && (
+                  <ReferenceLine x={0}         stroke={tokens.accent.cyan} strokeDasharray="4 3" strokeWidth={1.5} />
+                )}
+                {showPadLines && (
+                  <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5} />
+                )}
                 <Area dataKey="temp" type="monotone"
                   stroke={C.temp} strokeWidth={1.5} fill="url(#tempGrad)"
                   dot={false} connectNulls isAnimationActive={false} />
@@ -509,6 +722,127 @@ const DiveCounter = styled.span`
   text-align: center;
 `;
 
+// ── Summary card ──────────────────────────────────────────
+const SummaryCard = styled.div`
+  background: ${tokens.bg.surface};
+  border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.lg};
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+`;
+
+const SummaryHeader = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const SummaryIcon = styled.span` font-size: 16px; line-height: 1; `;
+
+const SummaryTitle = styled.h2`
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${tokens.text.secondary};
+`;
+
+const SummaryNarrative = styled.p`
+  font-size: 15px;
+  font-weight: 500;
+  color: ${tokens.text.primary};
+  line-height: 1.5;
+  padding: 10px 14px;
+  background: ${tokens.bg.elevated};
+  border-radius: ${tokens.radius.md};
+  border-left: 3px solid ${tokens.accent.cyan};
+`;
+
+const SummaryMetrics = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.md};
+  overflow: hidden;
+`;
+
+const SummaryMetric = styled.div`
+  flex: 1;
+  min-width: 120px;
+  padding: 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-right: 1px solid ${tokens.border.subtle};
+  &:last-child { border-right: none; }
+`;
+
+const SummaryMetricLabel = styled.span`
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${tokens.text.muted};
+`;
+
+const SummaryMetricValue = styled.span<{ $c?: string }>`
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: ${({ $c }) => $c ?? tokens.text.primary};
+  display: flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+const SummaryBadge = styled.span<{ $c: string }>`
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: ${({ $c }) => $c}22;
+  color: ${({ $c }) => $c};
+  border: 1px solid ${({ $c }) => $c}44;
+`;
+
+// ── Pad controls ──────────────────────────────────────────
+const PadControls = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+`;
+
+const PadGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 3px;
+`;
+
+const PadLabel = styled.span`
+  font-size: 11px;
+  color: ${tokens.text.muted};
+  margin-right: 4px;
+  white-space: nowrap;
+`;
+
+const PadBtn = styled.button<{ $active: boolean }>`
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid ${({ $active }) => $active ? tokens.accent.cyan : tokens.border.subtle};
+  background: ${({ $active }) => $active ? `${tokens.accent.cyan}22` : 'transparent'};
+  color: ${({ $active }) => $active ? tokens.accent.cyan : tokens.text.muted};
+  cursor: pointer;
+  transition: all 0.15s;
+  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
+`;
+
+// ── Stats bar ─────────────────────────────────────────────
 const StatsBar = styled.div`
   display: flex;
   align-items: center;
@@ -556,6 +890,7 @@ const StatDivider = styled.div`
   flex-shrink: 0;
 `;
 
+// ── Chart cards ───────────────────────────────────────────
 const Card = styled.div`
   background: ${tokens.bg.surface};
   border: 1px solid ${tokens.border.subtle};
@@ -568,9 +903,10 @@ const CardHeader = styled.div`
   align-items: center;
   gap: 8px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 `;
 
-const CardIcon = styled.span` font-size: 16px; line-height: 1; `;
+const CardIconEl = styled.span` font-size: 16px; line-height: 1; `;
 
 const CardTitle = styled.h2`
   font-size: 13px;
@@ -578,6 +914,12 @@ const CardTitle = styled.h2`
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: ${tokens.text.secondary};
+`;
+
+const CardControls = styled.div`
+  margin-left: auto;
+  display: flex;
+  align-items: center;
 `;
 
 const ChartLegend = styled.div`
@@ -594,6 +936,15 @@ const LegDot = styled.span<{ $c: string }>`
   width: 8px; height: 8px;
   border-radius: 50%;
   background: ${({ $c }) => $c};
+`;
+
+const LegLine = styled.span<{ $c: string }>`
+  display: inline-block;
+  width: 18px; height: 2px;
+  background: ${({ $c }) => $c};
+  border-radius: 1px;
+  vertical-align: middle;
+  margin-right: 4px;
 `;
 
 const RateAxisLabel = styled.div`
