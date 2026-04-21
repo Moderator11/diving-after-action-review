@@ -75,11 +75,13 @@ export function VideoOverlay({ dive }: Props) {
   const [duration, setDuration]     = useState(0);
   /** videoRatio: width / height. < 1 = portrait, >= 1 = landscape */
   const [videoRatio, setVideoRatio] = useState<number>(16 / 9);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   /** syncOffset: video_time − syncOffset = data_elapsed_seconds */
   const [syncOffset, setSyncOffset] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekRef  = useRef<HTMLInputElement>(null);
+  const wrapRef  = useRef<HTMLDivElement>(null);
 
   // ── Derived ──────────────────────────────────────────────
   const t0Ms = useMemo(
@@ -193,6 +195,23 @@ export function VideoOverlay({ dive }: Props) {
     if (file) loadVideo(file);
   }, [loadVideo]);
 
+  // ── Fullscreen ───────────────────────────────────────────
+  const toggleFullscreen = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().catch(console.error);
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
   // ── Playback ─────────────────────────────────────────────
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
@@ -206,18 +225,17 @@ export function VideoOverlay({ dive }: Props) {
     setCurrentTime(t);
   }, []);
 
-  // Space bar shortcut
+  // Keyboard shortcuts: Space = play/pause, F = fullscreen
   useEffect(() => {
     if (!videoUrl) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement).tagName !== 'INPUT') {
-        e.preventDefault();
-        togglePlay();
-      }
+      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+      if (e.code === 'KeyF')  { e.preventDefault(); toggleFullscreen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [videoUrl, togglePlay]);
+  }, [videoUrl, togglePlay, toggleFullscreen]);
 
   // Cleanup blob URL on unmount
   useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, []); // eslint-disable-line
@@ -268,8 +286,10 @@ export function VideoOverlay({ dive }: Props) {
           {/* ── Video + data overlay ── */}
           <VideoWrapCenter>
             <VideoWrap
+              ref={wrapRef}
               $ratio={videoRatio}
               $portrait={isPortrait}
+              $isFs={isFullscreen}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
@@ -293,119 +313,174 @@ export function VideoOverlay({ dive }: Props) {
                 onEnded={() => setIsPlaying(false)}
               />
 
-              {/* ── Combined bottom overlay panel ── */}
-              <BottomPanel>
-                {/* Metrics row */}
-                <MetricsRow>
-                  <Metric>
-                    <MLabel>수심</MLabel>
-                    <MValueRow>
-                      <MValue $c={C.depth}>
-                        {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
-                      </MValue>
-                      <MUnit>m</MUnit>
-                    </MValueRow>
-                  </Metric>
+              {/* ── Normal mode: wide bottom gradient panel ── */}
+              {!isFullscreen && (
+                <BottomPanel>
+                  <MetricsRow>
+                    <Metric>
+                      <MLabel>수심</MLabel>
+                      <MValueRow>
+                        <MValue $c={C.depth}>
+                          {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
+                        </MValue>
+                        <MUnit>m</MUnit>
+                      </MValueRow>
+                    </Metric>
+                    <MDivider />
+                    <Metric>
+                      <MLabel>
+                        {currentRecord && Math.abs(currentRateMps) > 0.05
+                          ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
+                          : '속도'}
+                      </MLabel>
+                      <MValueRow>
+                        <MValue $c={
+                          !currentRecord           ? 'rgba(255,255,255,0.35)'
+                          : currentRateMps > 0.05  ? C.descent
+                          : currentRateMps < -0.05 ? C.ascent
+                          : 'rgba(255,255,255,0.7)'
+                        }>
+                          {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
+                        </MValue>
+                        <MUnit>m/s</MUnit>
+                      </MValueRow>
+                    </Metric>
+                    {dive.maxHR !== null && (
+                      <>
+                        <MDivider />
+                        <Metric>
+                          <MLabel>심박수</MLabel>
+                          <MValueRow>
+                            <MValue $c={C.hr}>
+                              {currentRecord?.heartRate != null ? currentRecord.heartRate : '--'}
+                            </MValue>
+                            <MUnit>bpm</MUnit>
+                          </MValueRow>
+                        </Metric>
+                      </>
+                    )}
+                    {dive.avgTempC !== null && (
+                      <>
+                        <MDivider />
+                        <Metric>
+                          <MLabel>수온</MLabel>
+                          <MValueRow>
+                            <MValue $c={C.temp}>
+                              {currentRecord?.temperatureC != null
+                                ? currentRecord.temperatureC.toFixed(1) : '--'}
+                            </MValue>
+                            <MUnit>°C</MUnit>
+                          </MValueRow>
+                        </Metric>
+                      </>
+                    )}
+                  </MetricsRow>
+                  <ChartSvg viewBox="0 0 1000 100" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="dg" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={C.depth} stopOpacity="0.4" />
+                        <stop offset="100%" stopColor={C.depth} stopOpacity="0.04" />
+                      </linearGradient>
+                    </defs>
+                    {svgPaths.area && <path d={svgPaths.area} fill="url(#dg)" />}
+                    {svgPaths.line && (
+                      <path d={svgPaths.line} fill="none" stroke={C.depth}
+                        strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                    )}
+                    {svgDotPos && (
+                      <circle cx={svgDotPos.cx} cy={svgDotPos.cy} r="6"
+                        fill={C.depth} stroke="rgba(255,255,255,0.9)"
+                        strokeWidth="2" vectorEffect="non-scaling-stroke"
+                        style={{ transition: 'cx 0.25s ease-out, cy 0.25s ease-out' }} />
+                    )}
+                  </ChartSvg>
+                </BottomPanel>
+              )}
 
-                  <MDivider />
-
-                  <Metric>
-                    <MLabel>
-                      {currentRecord && Math.abs(currentRateMps) > 0.05
-                        ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
-                        : '속도'}
-                    </MLabel>
-                    <MValueRow>
-                      <MValue $c={
-                        !currentRecord       ? 'rgba(255,255,255,0.35)'
-                        : currentRateMps > 0.05  ? C.descent
-                        : currentRateMps < -0.05 ? C.ascent
-                        : 'rgba(255,255,255,0.7)'
-                      }>
-                        {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
-                      </MValue>
-                      <MUnit>m/s</MUnit>
-                    </MValueRow>
-                  </Metric>
-
-                  {dive.maxHR !== null && (
-                    <>
-                      <MDivider />
-                      <Metric>
+              {/* ── Fullscreen mode: compact top-left panel ── */}
+              {isFullscreen && (
+                <FsSidePanel>
+                  <FsMetricsGrid $cols={dive.maxHR !== null || dive.avgTempC !== null ? 2 : 1}>
+                    {/* 수심 */}
+                    <FsMetricCell>
+                      <MLabel>수심</MLabel>
+                      <MValueRow>
+                        <MValue $c={C.depth} style={{ fontSize: 28 }}>
+                          {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
+                        </MValue>
+                        <MUnit>m</MUnit>
+                      </MValueRow>
+                    </FsMetricCell>
+                    {/* 속도 */}
+                    <FsMetricCell>
+                      <MLabel>
+                        {currentRecord && Math.abs(currentRateMps) > 0.05
+                          ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
+                          : '속도'}
+                      </MLabel>
+                      <MValueRow>
+                        <MValue $c={
+                          !currentRecord           ? 'rgba(255,255,255,0.35)'
+                          : currentRateMps > 0.05  ? C.descent
+                          : currentRateMps < -0.05 ? C.ascent
+                          : 'rgba(255,255,255,0.7)'
+                        } style={{ fontSize: 28 }}>
+                          {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
+                        </MValue>
+                        <MUnit>m/s</MUnit>
+                      </MValueRow>
+                    </FsMetricCell>
+                    {/* 심박수 */}
+                    {dive.maxHR !== null && (
+                      <FsMetricCell>
                         <MLabel>심박수</MLabel>
                         <MValueRow>
-                          <MValue $c={C.hr}>
-                            {currentRecord?.heartRate != null
-                              ? currentRecord.heartRate
-                              : '--'}
+                          <MValue $c={C.hr} style={{ fontSize: 28 }}>
+                            {currentRecord?.heartRate != null ? currentRecord.heartRate : '--'}
                           </MValue>
                           <MUnit>bpm</MUnit>
                         </MValueRow>
-                      </Metric>
-                    </>
-                  )}
-
-                  {dive.avgTempC !== null && (
-                    <>
-                      <MDivider />
-                      <Metric>
+                      </FsMetricCell>
+                    )}
+                    {/* 수온 */}
+                    {dive.avgTempC !== null && (
+                      <FsMetricCell>
                         <MLabel>수온</MLabel>
                         <MValueRow>
-                          <MValue $c={C.temp}>
+                          <MValue $c={C.temp} style={{ fontSize: 28 }}>
                             {currentRecord?.temperatureC != null
-                              ? currentRecord.temperatureC.toFixed(1)
-                              : '--'}
+                              ? currentRecord.temperatureC.toFixed(1) : '--'}
                           </MValue>
                           <MUnit>°C</MUnit>
                         </MValueRow>
-                      </Metric>
-                    </>
-                  )}
-                </MetricsRow>
+                      </FsMetricCell>
+                    )}
+                  </FsMetricsGrid>
 
-                {/* Mini depth profile chart */}
-                <ChartSvg
-                  viewBox="0 0 1000 100"
-                  preserveAspectRatio="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <defs>
-                    <linearGradient id="dg" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={C.depth} stopOpacity="0.4" />
-                      <stop offset="100%" stopColor={C.depth} stopOpacity="0.04" />
-                    </linearGradient>
-                  </defs>
-                  {/* Area fill */}
-                  {svgPaths.area && (
-                    <path d={svgPaths.area} fill="url(#dg)" />
-                  )}
-                  {/* Profile line */}
-                  {svgPaths.line && (
-                    <path
-                      d={svgPaths.line}
-                      fill="none"
-                      stroke={C.depth}
-                      strokeWidth="2"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  )}
-                  {/* Animated position dot */}
-                  {svgDotPos && (
-                    <circle
-                      cx={svgDotPos.cx}
-                      cy={svgDotPos.cy}
-                      r="6"
-                      fill={C.depth}
-                      stroke="rgba(255,255,255,0.9)"
-                      strokeWidth="2"
-                      vectorEffect="non-scaling-stroke"
-                      style={{
-                        transition: 'cx 0.25s ease-out, cy 0.25s ease-out',
-                      }}
-                    />
-                  )}
-                </ChartSvg>
-              </BottomPanel>
+                  <FsPanelDivider />
+
+                  {/* Depth chart */}
+                  <FsPanelChartSvg viewBox="0 0 1000 100" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="dg-fs" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={C.depth} stopOpacity="0.45" />
+                        <stop offset="100%" stopColor={C.depth} stopOpacity="0.05" />
+                      </linearGradient>
+                    </defs>
+                    {svgPaths.area && <path d={svgPaths.area} fill="url(#dg-fs)" />}
+                    {svgPaths.line && (
+                      <path d={svgPaths.line} fill="none" stroke={C.depth}
+                        strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+                    )}
+                    {svgDotPos && (
+                      <circle cx={svgDotPos.cx} cy={svgDotPos.cy} r="7"
+                        fill={C.depth} stroke="rgba(255,255,255,0.9)"
+                        strokeWidth="2.5" vectorEffect="non-scaling-stroke"
+                        style={{ transition: 'cx 0.25s ease-out, cy 0.25s ease-out' }} />
+                    )}
+                  </FsPanelChartSvg>
+                </FsSidePanel>
+              )}
 
               {/* Status badge (out-of-range) */}
               {dataStatus === 'before' && (
@@ -428,6 +503,34 @@ export function VideoOverlay({ dive }: Props) {
                   <span style={{ fontSize: 32 }}>🎬</span>
                   <span style={{ fontSize: 14, color: tokens.text.secondary }}>영상 교체</span>
                 </DragReplaceOverlay>
+              )}
+
+              {/* Corner fullscreen toggle (always visible on hover) */}
+              <FsCornerBtn onClick={toggleFullscreen} title={isFullscreen ? '전체화면 종료 (F)' : '전체화면 (F)'}>
+                {isFullscreen ? '⊡' : '⛶'}
+              </FsCornerBtn>
+
+              {/* Fullscreen-only seek/control bar (sits above BottomPanel) */}
+              {isFullscreen && (
+                <FsControlsBar>
+                  <FsPlayBtn onClick={togglePlay}>{isPlaying ? '⏸' : '▶'}</FsPlayBtn>
+                  <FsTimeLabel>{fmtTime(currentTime)}</FsTimeLabel>
+                  <FsSeekWrap>
+                    <FsSeekInput
+                      type="range"
+                      min={0}
+                      max={duration || 0}
+                      step={0.033}
+                      value={currentTime}
+                      onChange={handleSeek}
+                      style={{
+                        '--pct': `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
+                      } as React.CSSProperties}
+                    />
+                  </FsSeekWrap>
+                  <FsTimeLabel>{fmtTime(duration)}</FsTimeLabel>
+                  <FsExitBtn onClick={toggleFullscreen} title="전체화면 종료 (F / Esc)">✕</FsExitBtn>
+                </FsControlsBar>
               )}
 
               {/* Timeline bar at very bottom */}
@@ -467,6 +570,7 @@ export function VideoOverlay({ dive }: Props) {
               />
             </SeekTrack>
             <TimeLbl $dim>{fmtTime(duration)}</TimeLbl>
+            <FsToggleBtn onClick={toggleFullscreen} title="전체화면 (F)">⛶</FsToggleBtn>
           </Controls>
 
           {/* ── Sync panel ── */}
@@ -617,7 +721,12 @@ const VideoWrapCenter = styled.div`
 `;
 
 /** Adapts to portrait vs landscape; $portrait drives sizing strategy */
-const VideoWrap = styled.div<{ $ratio: number; $portrait: boolean; $dragOver: boolean }>`
+const VideoWrap = styled.div<{
+  $ratio: number;
+  $portrait: boolean;
+  $isFs: boolean;
+  $dragOver: boolean;
+}>`
   position: relative;
   background: #000;
   border-radius: ${tokens.radius.md};
@@ -625,11 +734,19 @@ const VideoWrap = styled.div<{ $ratio: number; $portrait: boolean; $dragOver: bo
   cursor: pointer;
   outline: ${({ $dragOver }) => $dragOver ? `2px dashed ${tokens.accent.cyan}` : 'none'};
 
-  ${({ $portrait, $ratio }) =>
+  /* In fullscreen the browser overrides dimensions — just ensure video fills it */
+  ${({ $isFs }) => $isFs && css`
+    width: 100% !important;
+    height: 100% !important;
+    border-radius: 0;
+    max-height: none;
+  `}
+
+  ${({ $portrait, $ratio, $isFs }) => !$isFs && (
     $portrait
       ? css`
-          /* Portrait: constrain by height */
-          height: min(75vh, 620px);
+          /* Portrait: constrain by height, auto width */
+          height: min(82vh, 780px);
           aspect-ratio: ${$ratio};
           width: auto;
           max-width: 100%;
@@ -638,8 +755,12 @@ const VideoWrap = styled.div<{ $ratio: number; $portrait: boolean; $dragOver: bo
           /* Landscape: fill width */
           width: 100%;
           aspect-ratio: ${$ratio};
-          max-height: 75vh;
-        `}
+          max-height: 78vh;
+        `
+  )}
+
+  /* Reveal corner fullscreen button on hover */
+  &:hover > [data-fs-btn] { opacity: 1; }
 `;
 
 const VideoEl = styled.video`
@@ -1014,4 +1135,199 @@ const SyncHint = styled.p`
   font-size: 11px;
   color: ${tokens.text.muted};
   line-height: 1.6;
+`;
+
+/* ── Fullscreen corner toggle button (shows on video hover) ── */
+const FsCornerBtn = styled.button.attrs({ 'data-fs-btn': true })`
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(8, 12, 22, 0.65);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.18s, background 0.15s, color 0.15s;
+  z-index: 20;
+  cursor: pointer;
+  pointer-events: auto;
+  &:hover {
+    background: rgba(6, 182, 212, 0.25);
+    color: ${tokens.accent.cyan};
+    border-color: ${tokens.accent.cyan}55;
+  }
+`;
+
+/* ── Fullscreen seek/controls bar (overlaid on video in FS mode) ── */
+const FsControlsBar = styled.div`
+  position: absolute;
+  bottom: 5px;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 8px;
+  z-index: 30;
+  pointer-events: auto;
+`;
+
+const FsPlayBtn = styled.button`
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(8, 12, 22, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
+`;
+
+const FsTimeLabel = styled.span`
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.6);
+  min-width: 36px;
+  text-align: center;
+  flex-shrink: 0;
+`;
+
+const FsSeekWrap = styled.div`
+  flex: 1;
+`;
+
+const FsSeekInput = styled.input`
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    ${tokens.accent.cyan} var(--pct, 0%),
+    rgba(255, 255, 255, 0.18) var(--pct, 0%)
+  );
+
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    margin-top: -5px;
+    background: ${tokens.accent.cyan};
+    box-shadow: 0 0 0 3px ${tokens.accent.cyan}33;
+    transition: box-shadow 0.15s;
+  }
+  &:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px ${tokens.accent.cyan}44; }
+  &::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
+  &::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: ${tokens.accent.cyan}; border: none; cursor: pointer;
+  }
+  &::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.18); }
+`;
+
+const FsExitBtn = styled.button`
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: rgba(8, 12, 22, 0.65);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+  &:hover { border-color: ${tokens.accent.danger}55; color: ${tokens.accent.danger}; }
+`;
+
+/* ── Fullscreen toggle button in the regular controls bar ── */
+const FsToggleBtn = styled.button`
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: ${tokens.bg.elevated};
+  border: 1px solid ${tokens.border.subtle};
+  color: ${tokens.text.muted};
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
+`;
+
+/* ── Fullscreen side panel ── */
+const FsSidePanel = styled.div`
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 248px;
+  background: rgba(4, 8, 18, 0.82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  user-select: none;
+  z-index: 15;
+`;
+
+const FsMetricsGrid = styled.div<{ $cols: number }>`
+  display: grid;
+  grid-template-columns: ${({ $cols }) => `repeat(${$cols}, 1fr)`};
+  gap: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+`;
+
+const FsMetricCell = styled.div`
+  background: rgba(4, 8, 18, 0.6);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+`;
+
+const FsPanelDivider = styled.div`
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 -2px;
+`;
+
+const FsPanelChartSvg = styled.svg`
+  width: 100%;
+  height: 58px;
+  display: block;
+  overflow: visible;
 `;
