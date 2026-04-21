@@ -49,20 +49,37 @@ function findRecord(
   return ea <= eb ? a : b;
 }
 
+/** Downsample to max `maxPts` points (keep deepest in each bucket) */
+function downsample(records: DiveRecord[], maxPts: number): DiveRecord[] {
+  if (records.length <= maxPts) return records;
+  const ratio = records.length / maxPts;
+  const result: DiveRecord[] = [];
+  for (let i = 0; i < maxPts; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.min(Math.floor((i + 1) * ratio), records.length);
+    let pick = start;
+    for (let j = start + 1; j < end; j++) {
+      if (records[j].depthM > records[pick].depthM) pick = j;
+    }
+    result.push(records[pick]);
+  }
+  return result;
+}
+
 // ── Component ─────────────────────────────────────────────
 export function VideoOverlay({ dive }: Props) {
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl]     = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying]   = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  /** syncOffset: video_time − syncOffset = data_elapsed_seconds
-   *  Positive  → video started before dive data began
-   *  Negative  → dive data began before video */
+  const [duration, setDuration]     = useState(0);
+  /** videoRatio: width / height. < 1 = portrait, >= 1 = landscape */
+  const [videoRatio, setVideoRatio] = useState<number>(16 / 9);
+  /** syncOffset: video_time − syncOffset = data_elapsed_seconds */
   const [syncOffset, setSyncOffset] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const seekRef = useRef<HTMLInputElement>(null);
+  const seekRef  = useRef<HTMLInputElement>(null);
 
   // ── Derived ──────────────────────────────────────────────
   const t0Ms = useMemo(
@@ -75,10 +92,10 @@ export function VideoOverlay({ dive }: Props) {
     return (dive.records[dive.records.length - 1].timestamp.getTime() - t0Ms) / 1000;
   }, [dive.records, t0Ms]);
 
-  const dataElapsed = currentTime - syncOffset; // seconds from dive start
+  const dataElapsed = currentTime - syncOffset;
 
   const dataStatus: 'before' | 'active' | 'after' =
-    dataElapsed < 0 ? 'before'
+    dataElapsed < 0            ? 'before'
     : dataElapsed > diveDuration ? 'after'
     : 'active';
 
@@ -96,16 +113,54 @@ export function VideoOverlay({ dive }: Props) {
     return dt > 0 ? (currentRecord.depthM - prev.depthM) / dt : 0;
   }, [currentRecord, dive.records]);
 
-  const depthFraction = currentRecord
-    ? Math.min(currentRecord.depthM / Math.max(dive.maxDepthM, 0.01), 1)
-    : 0;
-
   // Sync slider label
   const syncLabel =
     syncOffset === 0 ? '동기화 없음 (슬라이더로 조정)'
     : syncOffset > 0
       ? `영상이 데이터보다 ${syncOffset.toFixed(1)}초 먼저 시작`
       : `데이터가 영상보다 ${(-syncOffset).toFixed(1)}초 먼저 시작`;
+
+  // ── SVG depth chart paths ────────────────────────────────
+  const svgPaths = useMemo(() => {
+    const recs = dive.records;
+    if (recs.length < 2) return { line: '', area: '' };
+    const maxD    = Math.max(dive.maxDepthM, 0.01);
+    const totalDur = diveDuration || 1;
+    const pts     = downsample(recs, 600);
+
+    const coords = pts.map(r => {
+      const elapsed = (r.timestamp.getTime() - t0Ms) / 1000;
+      const x = (elapsed / totalDur) * 1000;
+      const y = (r.depthM / maxD) * 100;
+      return [x, y] as [number, number];
+    });
+
+    const lineD = coords
+      .map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`)
+      .join(' ');
+
+    // Area: from y=0 (surface) down to profile, then close back to y=0
+    const first = coords[0];
+    const last  = coords[coords.length - 1];
+    const areaD =
+      `M ${first[0].toFixed(1)} 0 ` +
+      coords.map(([x, y]) => `L ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ') +
+      ` L ${last[0].toFixed(1)} 0 Z`;
+
+    return { line: lineD, area: areaD };
+  }, [dive.records, dive.maxDepthM, diveDuration, t0Ms]);
+
+  /** SVG coordinates of the animated position dot */
+  const svgDotPos = useMemo(() => {
+    if (!currentRecord) return null;
+    const maxD    = Math.max(dive.maxDepthM, 0.01);
+    const totalDur = diveDuration || 1;
+    const elapsed = (currentRecord.timestamp.getTime() - t0Ms) / 1000;
+    return {
+      cx: (elapsed / totalDur) * 1000,
+      cy: (currentRecord.depthM / maxD) * 100,
+    };
+  }, [currentRecord, dive.maxDepthM, diveDuration, t0Ms]);
 
   // ── Drag & drop ──────────────────────────────────────────
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -128,6 +183,7 @@ export function VideoOverlay({ dive }: Props) {
     setCurrentTime(0);
     setIsPlaying(false);
     setSyncOffset(0);
+    setVideoRatio(16 / 9); // reset until metadata loads
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -166,12 +222,13 @@ export function VideoOverlay({ dive }: Props) {
   // Cleanup blob URL on unmount
   useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, []); // eslint-disable-line
 
-  // Sync seek slider thumb fill via CSS variable
+  // Sync seek slider fill via CSS variable
   useEffect(() => {
     if (!seekRef.current || duration === 0) return;
-    const pct = (currentTime / duration) * 100;
-    seekRef.current.style.setProperty('--pct', `${pct}%`);
+    seekRef.current.style.setProperty('--pct', `${(currentTime / duration) * 100}%`);
   }, [currentTime, duration]);
+
+  const isPortrait = videoRatio < 1;
 
   // ── Render ───────────────────────────────────────────────
   return (
@@ -207,133 +264,189 @@ export function VideoOverlay({ dive }: Props) {
           <DropSub>MP4 · MOV · AVI · MKV 등 지원</DropSub>
         </DropZone>
       ) : (
-
         <PlayerArea>
           {/* ── Video + data overlay ── */}
-          <VideoWrap
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            $dragOver={isDragOver}
-          >
-            <VideoEl
-              ref={videoRef}
-              src={videoUrl}
-              onClick={togglePlay}
-              onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
-              onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onEnded={() => setIsPlaying(false)}
-            />
-
-            {/* ── Corner data panels ── */}
-
-            {/* Top-left: Depth */}
-            <Panel $pos="tl">
-              <PLabel>수심</PLabel>
-              <PRow>
-                <PValue $c={C.depth}>
-                  {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
-                </PValue>
-                <PUnit>m</PUnit>
-                {/* Depth gauge bar */}
-                <DepthGauge>
-                  <DepthGaugeFill style={{ height: `${depthFraction * 100}%` }} />
-                </DepthGauge>
-              </PRow>
-            </Panel>
-
-            {/* Top-right: Heart rate */}
-            {dive.maxHR !== null && (
-              <Panel $pos="tr">
-                <PLabel style={{ textAlign: 'right' }}>심박수</PLabel>
-                <PRow $right>
-                  <PValue $c={C.hr}>
-                    {currentRecord?.heartRate != null ? currentRecord.heartRate : '--'}
-                  </PValue>
-                  <PUnit>bpm</PUnit>
-                </PRow>
-              </Panel>
-            )}
-
-            {/* Bottom-left: Descent/ascent rate */}
-            <Panel $pos="bl">
-              <PLabel>
-                {currentRecord && Math.abs(currentRateMps) > 0.05
-                  ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
-                  : '속도'}
-              </PLabel>
-              <PRow>
-                <PValue $c={
-                  !currentRecord ? tokens.text.muted
-                  : currentRateMps > 0.05 ? C.descent
-                  : currentRateMps < -0.05 ? C.ascent
-                  : tokens.text.secondary
-                }>
-                  {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
-                </PValue>
-                <PUnit>m/s</PUnit>
-              </PRow>
-            </Panel>
-
-            {/* Bottom-right: Water temp */}
-            {dive.avgTempC !== null && (
-              <Panel $pos="br">
-                <PLabel style={{ textAlign: 'right' }}>수온</PLabel>
-                <PRow $right>
-                  <PValue $c={C.temp}>
-                    {currentRecord?.temperatureC != null
-                      ? currentRecord.temperatureC.toFixed(1)
-                      : '--'}
-                  </PValue>
-                  <PUnit>°C</PUnit>
-                </PRow>
-              </Panel>
-            )}
-
-            {/* Status badge (out-of-range) */}
-            {dataStatus === 'before' && (
-              <StatusBadge>
-                ⏳ 다이브 시작까지 {Math.abs(dataElapsed).toFixed(0)}초
-              </StatusBadge>
-            )}
-            {dataStatus === 'after' && (
-              <StatusBadge $done>✓ 다이브 완료</StatusBadge>
-            )}
-
-            {/* Play icon flash when paused */}
-            <PlayOverlay $show={!isPlaying} onClick={togglePlay}>
-              <PlayIconWrap>▶</PlayIconWrap>
-            </PlayOverlay>
-
-            {/* Drag-to-replace overlay */}
-            {isDragOver && (
-              <DragReplaceOverlay>
-                <span style={{ fontSize: 32 }}>🎬</span>
-                <span style={{ fontSize: 14, color: tokens.text.secondary }}>
-                  영상 교체
-                </span>
-              </DragReplaceOverlay>
-            )}
-
-            {/* Bottom timeline bar */}
-            <VideoTimeline>
-              {/* Data range highlight */}
-              {duration > 0 && (
-                <DataRangeBar
-                  style={{
-                    left: `${Math.max(0, (syncOffset / duration)) * 100}%`,
-                    width: `${Math.min(diveDuration / duration, 1 - Math.max(0, syncOffset / duration)) * 100}%`,
-                  }}
-                />
-              )}
-              {/* Playhead */}
-              <TimelineFill
-                style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }}
+          <VideoWrapCenter>
+            <VideoWrap
+              $ratio={videoRatio}
+              $portrait={isPortrait}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              $dragOver={isDragOver}
+            >
+              <VideoEl
+                ref={videoRef}
+                src={videoUrl}
+                onClick={togglePlay}
+                onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
+                onLoadedMetadata={() => {
+                  const v = videoRef.current;
+                  if (!v) return;
+                  setDuration(v.duration);
+                  if (v.videoWidth > 0 && v.videoHeight > 0) {
+                    setVideoRatio(v.videoWidth / v.videoHeight);
+                  }
+                }}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onEnded={() => setIsPlaying(false)}
               />
-            </VideoTimeline>
-          </VideoWrap>
+
+              {/* ── Combined bottom overlay panel ── */}
+              <BottomPanel>
+                {/* Metrics row */}
+                <MetricsRow>
+                  <Metric>
+                    <MLabel>수심</MLabel>
+                    <MValueRow>
+                      <MValue $c={C.depth}>
+                        {currentRecord ? currentRecord.depthM.toFixed(1) : '--'}
+                      </MValue>
+                      <MUnit>m</MUnit>
+                    </MValueRow>
+                  </Metric>
+
+                  <MDivider />
+
+                  <Metric>
+                    <MLabel>
+                      {currentRecord && Math.abs(currentRateMps) > 0.05
+                        ? currentRateMps > 0 ? '↓ 하강' : '↑ 상승'
+                        : '속도'}
+                    </MLabel>
+                    <MValueRow>
+                      <MValue $c={
+                        !currentRecord       ? 'rgba(255,255,255,0.35)'
+                        : currentRateMps > 0.05  ? C.descent
+                        : currentRateMps < -0.05 ? C.ascent
+                        : 'rgba(255,255,255,0.7)'
+                      }>
+                        {currentRecord ? Math.abs(currentRateMps).toFixed(2) : '--'}
+                      </MValue>
+                      <MUnit>m/s</MUnit>
+                    </MValueRow>
+                  </Metric>
+
+                  {dive.maxHR !== null && (
+                    <>
+                      <MDivider />
+                      <Metric>
+                        <MLabel>심박수</MLabel>
+                        <MValueRow>
+                          <MValue $c={C.hr}>
+                            {currentRecord?.heartRate != null
+                              ? currentRecord.heartRate
+                              : '--'}
+                          </MValue>
+                          <MUnit>bpm</MUnit>
+                        </MValueRow>
+                      </Metric>
+                    </>
+                  )}
+
+                  {dive.avgTempC !== null && (
+                    <>
+                      <MDivider />
+                      <Metric>
+                        <MLabel>수온</MLabel>
+                        <MValueRow>
+                          <MValue $c={C.temp}>
+                            {currentRecord?.temperatureC != null
+                              ? currentRecord.temperatureC.toFixed(1)
+                              : '--'}
+                          </MValue>
+                          <MUnit>°C</MUnit>
+                        </MValueRow>
+                      </Metric>
+                    </>
+                  )}
+                </MetricsRow>
+
+                {/* Mini depth profile chart */}
+                <ChartSvg
+                  viewBox="0 0 1000 100"
+                  preserveAspectRatio="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <defs>
+                    <linearGradient id="dg" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={C.depth} stopOpacity="0.4" />
+                      <stop offset="100%" stopColor={C.depth} stopOpacity="0.04" />
+                    </linearGradient>
+                  </defs>
+                  {/* Area fill */}
+                  {svgPaths.area && (
+                    <path d={svgPaths.area} fill="url(#dg)" />
+                  )}
+                  {/* Profile line */}
+                  {svgPaths.line && (
+                    <path
+                      d={svgPaths.line}
+                      fill="none"
+                      stroke={C.depth}
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  {/* Animated position dot */}
+                  {svgDotPos && (
+                    <circle
+                      cx={svgDotPos.cx}
+                      cy={svgDotPos.cy}
+                      r="6"
+                      fill={C.depth}
+                      stroke="rgba(255,255,255,0.9)"
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                      style={{
+                        transition: 'cx 0.25s ease-out, cy 0.25s ease-out',
+                      }}
+                    />
+                  )}
+                </ChartSvg>
+              </BottomPanel>
+
+              {/* Status badge (out-of-range) */}
+              {dataStatus === 'before' && (
+                <StatusBadge>
+                  ⏳ 다이브 시작까지 {Math.abs(dataElapsed).toFixed(0)}초
+                </StatusBadge>
+              )}
+              {dataStatus === 'after' && (
+                <StatusBadge $done>✓ 다이브 완료</StatusBadge>
+              )}
+
+              {/* Play/pause overlay */}
+              <PlayOverlay $show={!isPlaying} onClick={togglePlay}>
+                <PlayIconWrap>▶</PlayIconWrap>
+              </PlayOverlay>
+
+              {/* Drag-to-replace overlay */}
+              {isDragOver && (
+                <DragReplaceOverlay>
+                  <span style={{ fontSize: 32 }}>🎬</span>
+                  <span style={{ fontSize: 14, color: tokens.text.secondary }}>영상 교체</span>
+                </DragReplaceOverlay>
+              )}
+
+              {/* Timeline bar at very bottom */}
+              <VideoTimeline>
+                {duration > 0 && (
+                  <DataRangeBar style={{
+                    left:  `${Math.max(0, syncOffset / duration) * 100}%`,
+                    width: `${Math.min(
+                      diveDuration / duration,
+                      1 - Math.max(0, syncOffset / duration),
+                    ) * 100}%`,
+                  }} />
+                )}
+                <TimelineFill style={{
+                  width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%',
+                }} />
+              </VideoTimeline>
+            </VideoWrap>
+          </VideoWrapCenter>
 
           {/* ── Playback controls ── */}
           <Controls>
@@ -375,14 +488,11 @@ export function VideoOverlay({ dive }: Props) {
                 step={0.5}
                 value={syncOffset}
                 onChange={e => setSyncOffset(parseFloat(e.target.value))}
-                style={{
-                  '--pct': `${((syncOffset + 300) / 600) * 100}%`,
-                } as React.CSSProperties}
+                style={{ '--pct': `${((syncOffset + 300) / 600) * 100}%` } as React.CSSProperties}
               />
               <SyncEndLbl>+5분</SyncEndLbl>
             </SyncSliderRow>
 
-            {/* Visual timeline to show alignment */}
             <SyncViz>
               <SyncTrack>
                 <SyncTrackLabel>🎬 영상</SyncTrackLabel>
@@ -418,7 +528,7 @@ export function VideoOverlay({ dive }: Props) {
 // ── Animations ────────────────────────────────────────────
 const pulse = keyframes`
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
+  50%       { transform: scale(1.15); }
 `;
 
 // ── Styled Components ─────────────────────────────────────
@@ -427,6 +537,7 @@ const Wrapper = styled.div`
   border: 1px solid ${tokens.border.subtle};
   border-radius: ${tokens.radius.lg};
   padding: 20px 24px;
+  width: 100%;
 `;
 
 const CardHeader = styled.div`
@@ -492,21 +603,43 @@ const DropSub = styled.div`
   color: ${tokens.text.muted};
 `;
 
-/* ── Player ── */
+/* ── Player layout ── */
 const PlayerArea = styled.div`
   display: flex;
   flex-direction: column;
   gap: 12px;
 `;
 
-const VideoWrap = styled.div<{ $dragOver: boolean }>`
+/** Outer wrapper that centres portrait videos */
+const VideoWrapCenter = styled.div`
+  display: flex;
+  justify-content: center;
+`;
+
+/** Adapts to portrait vs landscape; $portrait drives sizing strategy */
+const VideoWrap = styled.div<{ $ratio: number; $portrait: boolean; $dragOver: boolean }>`
   position: relative;
   background: #000;
   border-radius: ${tokens.radius.md};
   overflow: hidden;
-  aspect-ratio: 16/9;
   cursor: pointer;
   outline: ${({ $dragOver }) => $dragOver ? `2px dashed ${tokens.accent.cyan}` : 'none'};
+
+  ${({ $portrait, $ratio }) =>
+    $portrait
+      ? css`
+          /* Portrait: constrain by height */
+          height: min(75vh, 620px);
+          aspect-ratio: ${$ratio};
+          width: auto;
+          max-width: 100%;
+        `
+      : css`
+          /* Landscape: fill width */
+          width: 100%;
+          aspect-ratio: ${$ratio};
+          max-height: 75vh;
+        `}
 `;
 
 const VideoEl = styled.video`
@@ -516,50 +649,61 @@ const VideoEl = styled.video`
   display: block;
 `;
 
-/* ── Data panels ── */
-type PanelPos = 'tl' | 'tr' | 'bl' | 'br';
-const panelPos = (pos: PanelPos) => {
-  const map: Record<PanelPos, string> = {
-    tl: 'top:12px;left:12px;',
-    tr: 'top:12px;right:12px;',
-    bl: 'bottom:28px;left:12px;',
-    br: 'bottom:28px;right:12px;',
-  };
-  return map[pos];
-};
-
-const Panel = styled.div<{ $pos: PanelPos }>`
+/* ── Combined overlay panel ── */
+const BottomPanel = styled.div`
   position: absolute;
-  ${({ $pos }) => panelPos($pos)}
-  background: rgba(8, 12, 22, 0.72);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 10px;
-  padding: 8px 12px;
-  min-width: 76px;
+  bottom: 5px; /* sit above the 5px VideoTimeline bar */
+  left: 0;
+  right: 0;
+  padding: 28px 14px 10px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(4, 8, 18, 0.65) 35%,
+    rgba(4, 8, 18, 0.90) 100%
+  );
   pointer-events: none;
   user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 `;
 
-const PLabel = styled.div`
+const MetricsRow = styled.div`
+  display: flex;
+  align-items: center;
+`;
+
+const Metric = styled.div`
+  flex: 1;
+  text-align: center;
+`;
+
+const MDivider = styled.div`
+  width: 1px;
+  height: 34px;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+`;
+
+const MLabel = styled.div`
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(255,255,255,0.4);
-  margin-bottom: 4px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-bottom: 3px;
 `;
 
-const PRow = styled.div<{ $right?: boolean }>`
+const MValueRow = styled.div`
   display: flex;
   align-items: baseline;
-  gap: 3px;
-  ${({ $right }) => $right && 'justify-content: flex-end;'}
+  justify-content: center;
+  gap: 2px;
 `;
 
-const PValue = styled.span<{ $c: string }>`
-  font-size: 26px;
+const MValue = styled.span<{ $c: string }>`
+  font-size: 22px;
   font-weight: 800;
   color: ${({ $c }) => $c};
   line-height: 1;
@@ -567,36 +711,22 @@ const PValue = styled.span<{ $c: string }>`
   font-variant-numeric: tabular-nums;
 `;
 
-const PUnit = styled.span`
-  font-size: 11px;
+const MUnit = styled.span`
+  font-size: 10px;
   font-weight: 500;
-  color: rgba(255,255,255,0.45);
+  color: rgba(255, 255, 255, 0.38);
   letter-spacing: 0.02em;
 `;
 
-/* Depth gauge bar */
-const DepthGauge = styled.div`
-  width: 4px;
-  height: 32px;
-  background: rgba(255,255,255,0.08);
-  border-radius: 2px;
-  margin-left: 6px;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  overflow: hidden;
-  align-self: center;
-`;
-
-const DepthGaugeFill = styled.div`
+/** The SVG depth mini-chart */
+const ChartSvg = styled.svg`
   width: 100%;
-  background: ${tokens.chart.depth};
-  border-radius: 2px;
-  transition: height 0.4s ease;
-  min-height: 2px;
+  height: 48px;
+  display: block;
+  overflow: visible;
 `;
 
-/* Status badge */
+/* ── Status badge ── */
 const StatusBadge = styled.div<{ $done?: boolean }>`
   position: absolute;
   top: 50%;
@@ -604,7 +734,7 @@ const StatusBadge = styled.div<{ $done?: boolean }>`
   transform: translate(-50%, -50%);
   background: rgba(8, 12, 22, 0.8);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 99px;
   padding: 10px 22px;
   font-size: 13px;
@@ -614,7 +744,7 @@ const StatusBadge = styled.div<{ $done?: boolean }>`
   pointer-events: none;
 `;
 
-/* Play overlay */
+/* ── Play overlay ── */
 const PlayOverlay = styled.div<{ $show: boolean }>`
   position: absolute;
   inset: 0;
@@ -629,12 +759,12 @@ const PlayOverlay = styled.div<{ $show: boolean }>`
 
 const PlayIconWrap = styled.div`
   font-size: 52px;
-  color: rgba(255,255,255,0.88);
-  text-shadow: 0 2px 12px rgba(0,0,0,0.6);
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
   line-height: 1;
 `;
 
-/* Drag replace overlay */
+/* ── Drag-replace overlay ── */
 const DragReplaceOverlay = styled.div`
   position: absolute;
   inset: 0;
@@ -643,20 +773,20 @@ const DragReplaceOverlay = styled.div`
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: rgba(6,182,212,0.12);
+  background: rgba(6, 182, 212, 0.12);
   border: 2px dashed ${tokens.accent.cyan};
   border-radius: ${tokens.radius.md};
   pointer-events: none;
 `;
 
-/* Bottom timeline */
+/* ── Bottom progress timeline ── */
 const VideoTimeline = styled.div`
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   height: 5px;
-  background: rgba(255,255,255,0.06);
+  background: rgba(255, 255, 255, 0.06);
   pointer-events: none;
 `;
 
@@ -741,7 +871,7 @@ const SeekInput = styled.input`
   background: linear-gradient(
     to right,
     ${tokens.accent.cyan} var(--pct, 0%),
-    ${tokens.bg.elevated} var(--pct, 0%)
+    ${tokens.bg.elevated}  var(--pct, 0%)
   );
 
   &::-webkit-slider-thumb {
@@ -750,14 +880,9 @@ const SeekInput = styled.input`
     box-shadow: 0 0 0 3px ${tokens.accent.cyan}33;
     transition: box-shadow 0.15s;
   }
-  &:hover::-webkit-slider-thumb {
-    box-shadow: 0 0 0 5px ${tokens.accent.cyan}44;
-  }
+  &:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px ${tokens.accent.cyan}44; }
   &::-webkit-slider-runnable-track { ${rangeTrackCss} }
-  &::-moz-range-thumb {
-    ${rangeThumbCss}
-    background: ${tokens.accent.cyan};
-  }
+  &::-moz-range-thumb { ${rangeThumbCss} background: ${tokens.accent.cyan}; }
   &::-moz-range-track { ${rangeTrackCss} background: ${tokens.bg.elevated}; }
 `;
 
@@ -842,15 +967,12 @@ const SyncInput = styled.input`
     box-shadow: 0 0 0 3px #818cf833;
     transition: box-shadow 0.15s;
   }
-  &:hover::-webkit-slider-thumb {
-    box-shadow: 0 0 0 5px #818cf844;
-  }
+  &:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #818cf844; }
   &::-webkit-slider-runnable-track { ${rangeTrackCss} }
   &::-moz-range-thumb { ${rangeThumbCss} background: #818cf8; }
   &::-moz-range-track { ${rangeTrackCss} background: ${tokens.bg.surface}; }
 `;
 
-/* ── Alignment visualisation ── */
 const SyncViz = styled.div`
   display: flex;
   flex-direction: column;
@@ -873,7 +995,7 @@ const SyncTrackLabel = styled.span`
 const SyncBar = styled.div<{ $color: string }>`
   flex: 1;
   height: 6px;
-  background: rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 3px;
   overflow: hidden;
   position: relative;
