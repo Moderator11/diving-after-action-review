@@ -1,9 +1,10 @@
-import { useCallback, useState, useRef } from 'react';
+import { useCallback, useState, useRef, useEffect } from 'react';
 import styled, { keyframes, css } from 'styled-components';
 import { useNavigate } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
 import { parseFitFile } from '../utils/parseFit';
 import { useDiveSession } from '../store/DiveContext';
+import favicon from '/favicon.svg'
 
 type DropState = 'idle' | 'hover' | 'loading' | 'error';
 
@@ -71,14 +72,86 @@ export default function HomePage() {
     if (inputRef.current) inputRef.current.value = '';
   };
 
+    // ── Logo expand animation ────────────────────────────────────────────────
+  const [logoExpanded, setLogoExpanded] = useState(false);
+  const isHovering = useRef(false);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+  const INTERVAL_MS = 3000;
+  const HOLD_MS = 3000;
+
+  let timer: ReturnType<typeof setTimeout>;
+
+  const loop = () => {
+    if (isHovering.current) return;
+
+    setLogoExpanded(true);
+
+    timer = setTimeout(() => {
+      if (!isHovering.current) {
+        setLogoExpanded(false);
+
+        // 다음 사이클 예약
+        timer = setTimeout(loop, INTERVAL_MS);
+      }
+    }, HOLD_MS);
+  };
+
+  // 최초 시작
+  timer = setTimeout(loop, INTERVAL_MS);
+
+  return () => clearTimeout(timer);
+}, []);
+
+  const handleLogoEnter = () => {
+    isHovering.current = true;
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    setLogoExpanded(true);
+  };
+
+  const handleLogoLeave = () => {
+    isHovering.current = false;
+    setLogoExpanded(false);
+  };
+
+  const LOGO_PARTS = [
+  { init: "D", rest: "iving\u00A0" },  // trailing nbsp = word space
+  { init: "A", rest: "fter\u00A0" },
+  { init: "A", rest: "ction\u00A0" },        // AI itself is the abbreviation; space only
+  { init: "R", rest: "eview" },
+] as const;
+
   return (
     <Page>
       <Background />
       <Container>
         <Logo>
-          <LogoIcon>🤿</LogoIcon>
-          <LogoText>DAAR</LogoText>
-          <LogoSub>Dive After-Action Review</LogoSub>
+          <LogoImageWrap>
+            <LogoImg src={favicon} alt="DAAR 로고" />
+            <LogoImgShadow />
+          </LogoImageWrap>
+          <LogoContainer
+            onMouseEnter={handleLogoEnter}
+            onMouseLeave={handleLogoLeave}
+          >
+            <TitleText>
+              {LOGO_PARTS.map(({ init, rest }, i) => (
+                <LogoWord key={i}>
+                  <LogoInit $expanded={logoExpanded}>{init}</LogoInit>
+                  {rest && (
+                    <LogoSuffix
+                      $expanded={logoExpanded}
+                      style={{ transitionDelay: logoExpanded ? `${i * 38}ms` : "0ms" }}
+                    >
+                      {rest}
+                    </LogoSuffix>
+                  )}
+                </LogoWord>
+              ))}
+            </TitleText>
+          </LogoContainer>
+          <LogoSub>After Dive debriefing tool</LogoSub>
         </Logo>
 
         <DropZone
@@ -149,9 +222,20 @@ const spin = keyframes`
   to { transform: rotate(360deg); }
 `;
 
-const float = keyframes`
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-8px); }
+const premiumFloat = keyframes`
+  0%   { transform: translateY(0px)   rotate(0deg)    scale(1);
+         filter: drop-shadow(0 6px 18px rgba(6,182,212,0.18)); }
+  15%  { transform: translateY(-5px)  rotate(-0.7deg) scale(1.010); }
+  50%  { transform: translateY(-16px) rotate(0deg)    scale(1.024);
+         filter: drop-shadow(0 28px 40px rgba(6,182,212,0.34)); }
+  85%  { transform: translateY(-5px)  rotate(0.7deg)  scale(1.010); }
+  100% { transform: translateY(0px)   rotate(0deg)    scale(1);
+         filter: drop-shadow(0 6px 18px rgba(6,182,212,0.18)); }
+`;
+
+const floatShadow = keyframes`
+  0%, 100% { transform: scaleX(1);    opacity: 0.28; }
+  50%       { transform: scaleX(0.5); opacity: 0.07; }
 `;
 
 const gradientMove = keyframes`
@@ -197,23 +281,34 @@ const Logo = styled.div`
   gap: 6px;
 `;
 
-const LogoIcon = styled.span`
-  font-size: 48px;
-  line-height: 1;
-  animation: ${float} 3s ease-in-out infinite;
-  display: block;
+/** Wrapper that stacks the floating image + its cast shadow */
+const LogoImageWrap = styled.div`
+  width: 42%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
 `;
 
-const LogoText = styled.h1`
-  font-size: 36px;
-  font-weight: 800;
-  letter-spacing: 0.15em;
-  background: linear-gradient(135deg, #60a5fa 0%, #06b6d4 50%, #14b8a6 100%);
-  background-size: 200% 200%;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  animation: ${gradientMove} 4s ease infinite;
+const LogoImg = styled.img`
+  width: 100%;
+  animation: ${premiumFloat} 5.2s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  will-change: transform, filter;
+`;
+
+/** Elliptical glow/shadow that shrinks as the logo rises */
+const LogoImgShadow = styled.div`
+  width: 50%;
+  height: 10px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(6, 182, 212, 0.38) 0%,
+    transparent 70%
+  );
+  border-radius: 50%;
+  animation: ${floatShadow} 5.2s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  will-change: transform, opacity;
+  margin-top: 2px;
 `;
 
 const LogoSub = styled.p`
@@ -334,4 +429,61 @@ const FooterText = styled.p`
   font-size: 11px;
   color: ${tokens.text.muted};
   line-height: 1.6;
+`;
+
+
+//===============
+
+const LogoContainer = styled.div`
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  &:hover { opacity: 0.85; }
+`;
+
+const TitleText = styled.div`
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  overflow: hidden; /* clips suffixes during animation */
+`;
+
+/** One word group, e.g. <LogoInit>S</LogoInit><LogoSuffix>ilicon</LogoSuffix> */
+const LogoWord = styled.span`
+  display: inline-flex;
+  align-items: baseline;
+`;
+
+/** Always-visible initial letter(s) */
+const LogoInit = styled.span<{ $expanded: boolean }>`
+  font-size: 36px;
+  font-weight: 800;
+  /* Wide spacing for DAAR acronym; narrows to zero when suffix slides in */
+  letter-spacing: ${({ $expanded }) => ($expanded ? '0.01em' : '0.13em')};
+  transition: letter-spacing 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  background: linear-gradient(135deg, #60a5fa 0%, #06b6d4 50%, #14b8a6 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: ${gradientMove} 4s ease infinite;
+  flex-shrink: 0;
+`;
+
+/** Suffix that slides in to the right on expand */
+const LogoSuffix = styled.span<{ $expanded: boolean }>`
+  display: inline-block;
+  white-space: nowrap;
+  overflow: hidden;
+  /* max-width drives the layout expansion; clip keeps it tidy at width:0 */
+  max-width: ${({ $expanded }) => ($expanded ? "200px" : "0px")};
+  opacity: ${({ $expanded }) => ($expanded ? 1 : 0)};
+  transition:
+    max-width 0.52s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity   0.32s ease;
+  vertical-align: baseline;
 `;
