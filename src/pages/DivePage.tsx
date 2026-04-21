@@ -16,6 +16,7 @@ import { tokens } from '../styles/GlobalStyle';
 import { useDiveSession } from '../store/DiveContext';
 import { formatDuration, formatDate } from '../utils/parseFit';
 import type { DetectedDive } from '../types/dive';
+import { VideoOverlay } from '../components/VideoOverlay';
 
 // ── Colour tokens ─────────────────────────────────────────
 const C = {
@@ -223,6 +224,9 @@ export default function DivePage() {
             다음 ›
           </NavButton>
         </DiveNav>
+
+        {/* ── Video overlay ── */}
+        <VideoOverlay dive={dive} />
 
         {/* ── Stats bar ── */}
         <StatsBar>
