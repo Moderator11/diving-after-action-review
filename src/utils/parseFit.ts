@@ -2,8 +2,38 @@
 import { Decoder, Stream } from '@garmin/fitsdk';
 import type {
   DiveSession, DiveRecord, DiveLap, SessionStats,
-  FitMessageGroup, FitRow, DetectedDive,
+  FitMessageGroup, FitRow, DetectedDive, DiveEvent, AlertSeverity,
 } from '../types/dive';
+
+// ── diveAlert data code → Korean label ───────────────────
+const DIVE_ALERT_LABELS: Record<number, { label: string; severity: AlertSeverity }> = {
+  0:  { label: '다이브 경보',           severity: 'warning' },
+  1:  { label: '무감압 한계 도달',       severity: 'danger'  },
+  2:  { label: '가스 전환 알림',         severity: 'info'    },
+  3:  { label: '수면 접근',             severity: 'info'    },
+  4:  { label: '무감압 한계 임박',       severity: 'warning' },
+  5:  { label: 'PO₂ 경고',             severity: 'warning' },
+  6:  { label: 'PO₂ 위험 (과다)',       severity: 'danger'  },
+  7:  { label: 'PO₂ 위험 (부족)',       severity: 'danger'  },
+  8:  { label: '시간 경보',             severity: 'warning' },
+  9:  { label: '수심 경보',             severity: 'warning' },
+  10: { label: '감압 천장 위반',         severity: 'danger'  },
+  11: { label: '감압 완료',             severity: 'info'    },
+  12: { label: '안전 정지 시작',         severity: 'info'    },
+  13: { label: '안전 정지 완료',         severity: 'info'    },
+  14: { label: '다이버 하강',           severity: 'info'    },
+  15: { label: '다이버 상승',           severity: 'info'    },
+};
+
+function fitEventToLabel(event: string, data: number | null): { label: string; severity: AlertSeverity } {
+  if (event === 'diveAlert' && data != null && DIVE_ALERT_LABELS[data]) {
+    return DIVE_ALERT_LABELS[data];
+  }
+  if (event === 'diveAlert') return { label: `다이브 경보 (${data})`, severity: 'warning' };
+  if (event === 'hrHighAlert') return { label: '심박수 상한 경보', severity: 'warning' };
+  if (event === 'hrLowAlert')  return { label: '심박수 하한 경보', severity: 'info'    };
+  return { label: event, severity: 'info' };
+}
 
 /** Depth (m) that triggers "in dive" detection */
 const DIVE_ONSET_M = 2.0;
@@ -348,6 +378,36 @@ export function parseFitFile(buffer: ArrayBuffer, filename: string): Promise<Div
       // ── Depth-based dive detection ────────────────────────
       const dives = detectDives(records);
 
+      // ── FIT events ────────────────────────────────────────
+      const RELEVANT_EVENTS = new Set([
+        'diveAlert', 'hrHighAlert', 'hrLowAlert',
+        'diveGasSwitch', 'diveSafetyStop',
+      ]);
+      const rawEvents: FitRow[] = (messages.eventMesgs as FitRow[]) ?? [];
+      const events: DiveEvent[] = rawEvents
+        .filter((e) => {
+          if (e.timestamp == null) return false;
+          const evtName = typeof e.event === 'string' ? e.event : '';
+          return RELEVANT_EVENTS.has(evtName);
+        })
+        .map((e) => {
+          const ts      = toDate(e.timestamp);
+          const elapsed = (ts.getTime() - sessionStartMs) / 1000;
+          const evtName = typeof e.event === 'string' ? e.event : String(e.event ?? '');
+          const data    = typeof e.data === 'number' ? e.data : null;
+          const { label, severity } = fitEventToLabel(evtName, data);
+          return {
+            timestamp:    ts,
+            elapsedSeconds: elapsed,
+            event:        evtName,
+            eventType:    typeof e.eventType === 'string' ? e.eventType : String(e.eventType ?? ''),
+            data,
+            label,
+            severity,
+            isDiveAlert: evtName === 'diveAlert',
+          };
+        });
+
       // ── Session stats ─────────────────────────────────────
       const rawSession: FitRow = ((messages.sessionMesgs as FitRow[]) ?? [])[0] ?? {};
       const allHRs  = records.map((r) => r.heartRate).filter((h): h is number => h !== null);
@@ -370,7 +430,7 @@ export function parseFitFile(buffer: ArrayBuffer, filename: string): Promise<Div
         totalDurationSeconds: (rawSession.totalElapsedTime as number) ?? 0,
       };
 
-      resolve({ filename, stats, records, laps, dives, allMessages });
+      resolve({ filename, stats, records, laps, dives, events, allMessages });
     } catch (e) {
       reject(new Error(`FIT parse error: ${e instanceof Error ? e.message : String(e)}`));
     }

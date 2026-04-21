@@ -58,11 +58,26 @@ export interface DetectedDive {
   avgTempC: number | null;
 }
 
+// ── FIT Events ───────────────────────────────────────────
+export type AlertSeverity = 'info' | 'warning' | 'danger';
+
+export interface DiveEvent {
+  timestamp: Date;
+  elapsedSeconds: number;   // seconds from session start
+  event: string;            // FIT event string (e.g. 'diveAlert', 'hrHighAlert')
+  eventType: string;        // FIT event_type string (e.g. 'marker')
+  data: number | null;      // event-specific numeric data
+  label: string;            // Korean human-readable label
+  severity: AlertSeverity;
+  isDiveAlert: boolean;
+}
+
 export interface DiveSession {
   filename: string;
   stats: SessionStats;
   records: DiveRecord[];
   laps: DiveLap[];
   dives: DetectedDive[];
+  events: DiveEvent[];
   allMessages: FitMessageGroup[];
 }

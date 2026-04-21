@@ -15,8 +15,10 @@ import {
 import { tokens } from '../styles/GlobalStyle';
 import { useDiveSession } from '../store/DiveContext';
 import { formatDuration, formatDate } from '../utils/parseFit';
-import type { DetectedDive, DiveRecord, DiveSession } from '../types/dive';
+import type { DetectedDive, DiveRecord, DiveSession, DiveEvent, AlertSeverity } from '../types/dive';
 import { VideoOverlay } from '../components/VideoOverlay';
+import { computeSpikes } from '../utils/spikes';
+import type { DiveSpike } from '../utils/spikes';
 
 // ── Colour tokens ─────────────────────────────────────────
 const C = {
@@ -28,6 +30,26 @@ const C = {
 } as const;
 
 const PAD_OPTIONS = [0, 1, 3, 5] as const;
+
+// Event colors: purple/violet family — clearly distinct from spike colors
+// Spike colors: yellow (#eab308), rose (#f43f5e), orange (#f97316)
+function severityColor(s: AlertSeverity): string {
+  if (s === 'danger')  return '#c026d3'; // fuchsia
+  if (s === 'warning') return '#7c3aed'; // violet
+  return '#0ea5e9';                       // sky blue
+}
+
+function severityIcon(s: AlertSeverity): string {
+  if (s === 'danger')  return '🟣';
+  if (s === 'warning') return '🔷';
+  return '🔵';
+}
+
+function spikeIcon(type: DiveSpike['type']): string {
+  if (type === 'hr')      return '❤️';
+  if (type === 'descent') return '↓';
+  return '↑';
+}
 
 // ── Chart point types ─────────────────────────────────────
 interface DepthPoint { t: number; depth: number; hr: number | null; }
@@ -220,6 +242,20 @@ function fmtTick(v: number): string {
   return `${sign}${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// ── Toggle chip sub-component ─────────────────────────────
+function ToggleChip({
+  label, color, checked, onClick,
+}: {
+  label: string; color: string; checked: boolean; onClick: () => void;
+}) {
+  return (
+    <ToggleChipEl $c={color} $on={checked} onClick={onClick}>
+      <ToggleDotEl $c={color} $on={checked} />
+      {label}
+    </ToggleChipEl>
+  );
+}
+
 // ── Pad toggle sub-component ─────────────────────────────
 function PadToggle({
   label,
@@ -265,8 +301,13 @@ export default function DivePage() {
   const { id } = useParams<{ id: string }>();
   const { session } = useDiveSession();
 
-  const [prePad,  setPrePad]  = useState(0);
-  const [postPad, setPostPad] = useState(0);
+  const [prePad,      setPrePad]      = useState(0);
+  const [postPad,     setPostPad]     = useState(0);
+  const [topN,        setTopN]        = useState(1);
+  const [showEvents,  setShowEvents]  = useState(true);
+  const [showHR,      setShowHR]      = useState(true);
+  const [showDescent, setShowDescent] = useState(true);
+  const [showAscent,  setShowAscent]  = useState(true);
 
   useEffect(() => { if (!session) navigate('/'); }, [session, navigate]);
   if (!session) return null;
@@ -289,6 +330,16 @@ export default function DivePage() {
   const t0Ms       = dive.startTime.getTime();
   const diveEndMs  = dive.records[dive.records.length - 1].timestamp.getTime();
   const diveDurSec = Math.round((diveEndMs - t0Ms) / 1000);
+
+  // ── Spikes & events ────────────────────────────────────
+  const spikes = useMemo(() => computeSpikes(dive, topN), [dive, topN]);
+
+  const diveEvents = useMemo<DiveEvent[]>(() => {
+    return session.events.filter((e) => {
+      const t = (e.timestamp.getTime() - t0Ms) / 1000;
+      return t >= -5 && t <= diveDurSec + 5;  // allow ±5s tolerance
+    });
+  }, [session.events, t0Ms, diveDurSec]);
 
   // ── Extended records (pre/post pad) ───────────────────
   const extendedRecs = useMemo<DiveRecord[]>(() => {
@@ -374,6 +425,120 @@ export default function DivePage() {
     </PadControls>
   );
 
+  // Top-N selector (1 / 2 / 3)
+  const topNControl = (
+    <TopNGroup>
+      <PadLabel>Top N</PadLabel>
+      {[1, 2, 3].map((n) => (
+        <PadBtn key={n} $active={topN === n} onClick={() => setTopN(n)}>{n}</PadBtn>
+      ))}
+    </TopNGroup>
+  );
+
+  // ── Visibility toggles ────────────────────────────────
+  const DESCENT_COLOR = '#eab308';
+  const ASCENT_COLOR  = '#f43f5e';
+  const HR_COLOR      = C.hr;          // orange — matches HR chart colour
+  const EVENT_COLOR   = severityColor('warning'); // violet
+
+  const toggleControls = (
+    <ToggleGroup>
+      <ToggleChip
+        label="다이브 이벤트" color={EVENT_COLOR}
+        checked={showEvents}  onClick={() => setShowEvents(v => !v)}
+      />
+      <ToggleChip
+        label="심박 급변" color={HR_COLOR}
+        checked={showHR}      onClick={() => setShowHR(v => !v)}
+      />
+      <ToggleChip
+        label="급하강" color={DESCENT_COLOR}
+        checked={showDescent} onClick={() => setShowDescent(v => !v)}
+      />
+      <ToggleChip
+        label="급상승" color={ASCENT_COLOR}
+        checked={showAscent}  onClick={() => setShowAscent(v => !v)}
+      />
+    </ToggleGroup>
+  );
+
+  // ── Spike reference lines — functions so each chart can pass its own yAxisId ──
+  // Label alternates left/right by rank to prevent overlap
+  const depthSpikeLines = (yAxisId?: string) => spikes
+    .filter((s) =>
+      (s.type === 'descent' && showDescent) ||
+      (s.type === 'ascent'  && showAscent)
+    )
+    .map((s) => {
+      const typeKr   = s.type === 'descent' ? '↓급하강' : '↑급상승';
+      const rankStr  = `Top${s.rank}`;
+      const position = s.rank % 2 === 1 ? 'insideTopRight' : 'insideTopLeft';
+      return (
+        <ReferenceLine
+          key={`ds-${s.t}-${s.type}`}
+          {...(yAxisId ? { yAxisId } : {})} x={s.t}
+          stroke={s.color}
+          strokeWidth={s.rank === 1 ? 2 : 1.2}
+          strokeDasharray={s.rank === 1 ? '5 3' : '3 4'}
+          opacity={Math.max(0.5, 0.9 - s.rank * 0.1)}
+          label={{
+            value: `${typeKr} ${rankStr}`,
+            position,
+            fill: s.color,
+            fontSize: 9,
+            fontWeight: 700,
+          }}
+        />
+      );
+    });
+
+  const hrSpikeLines = (yAxisId?: string) => spikes
+    .filter((s) => s.type === 'hr' && showHR)
+    .map((s) => {
+      const position = s.rank % 2 === 1 ? 'insideTopRight' : 'insideTopLeft';
+      return (
+        <ReferenceLine
+          key={`hr-${s.t}`}
+          {...(yAxisId ? { yAxisId } : {})} x={s.t}
+          stroke={s.color}
+          strokeWidth={s.rank === 1 ? 2 : 1.2}
+          strokeDasharray={s.rank === 1 ? '5 3' : '3 4'}
+          opacity={Math.max(0.5, 0.9 - s.rank * 0.1)}
+          label={{
+            value: `❤️급변 Top${s.rank}`,
+            position,
+            fill: s.color,
+            fontSize: 9,
+            fontWeight: 700,
+          }}
+        />
+      );
+    });
+
+  // ── diveAlert / FIT event reference lines ─────────────
+  // Purple/violet palette — visually separate from spike yellows and roses
+  const eventLines = (chartYAxisId?: string) =>
+    (showEvents ? diveEvents : []).map((e, i) => {
+      const t   = Math.round((e.timestamp.getTime() - t0Ms) / 1000);
+      const col = severityColor(e.severity);
+      // Alternate position to reduce label overlap with spikes
+      const position = i % 2 === 0 ? 'insideTopLeft' : 'insideTopRight';
+      return (
+        <ReferenceLine
+          key={`evt-${t}-${e.event}-${i}`}
+          {...(chartYAxisId ? { yAxisId: chartYAxisId } : {})}
+          x={t}
+          stroke={col} strokeWidth={2} strokeDasharray="6 2"
+          label={{
+            value: e.label.length > 14 ? e.label.slice(0, 13) + '…' : e.label,
+            position,
+            fill: col, fontSize: 9,
+            fontWeight: 700,
+          }}
+        />
+      );
+    });
+
   return (
     <Page>
       {/* ── Top bar ── */}
@@ -410,7 +575,15 @@ export default function DivePage() {
         <DiveSummaryCard dive={dive} diveIdx={diveIdx} session={session} />
 
         {/* ── Video overlay ── */}
-        <VideoOverlay dive={dive} />
+        <VideoOverlay
+          dive={dive}
+          spikes={spikes}
+          events={diveEvents}
+          showEvents={showEvents}
+          showHR={showHR}
+          showDescent={showDescent}
+          showAscent={showAscent}
+        />
 
         {/* ── Stats bar ── */}
         <StatsBar>
@@ -436,7 +609,7 @@ export default function DivePage() {
         </StatsBar>
 
         {/* ── Depth + HR chart (with pre/post pad controls) ── */}
-        <ChartCard title="수심 프로파일" icon="📈" controls={padControls}>
+        <ChartCard title="수심 프로파일" icon="📈" controls={<>{toggleControls}{topNControl}{padControls}</>}>
           <ChartLegend>
             <LegDot $c={C.depth} /> 수심 &nbsp;
             <LegDot $c={C.hr} /> 심박수
@@ -480,6 +653,10 @@ export default function DivePage() {
                   label={{ value: '출수', position: 'insideTopLeft', fill: tokens.accent.teal, fontSize: 10 }}
                 />
               )}
+              {/* Spike & event lines */}
+              {depthSpikeLines('d')}
+              {hrSpikeLines('d')}
+              {eventLines('d')}
               <Area yAxisId="d" dataKey="depth" type="monotone"
                 stroke={C.depth} strokeWidth={2} fill="url(#dg)"
                 dot={false} activeDot={{ r: 4, fill: C.depth }} isAnimationActive={false} />
@@ -519,6 +696,9 @@ export default function DivePage() {
               {showPadLines && (
                 <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5} />
               )}
+              {depthSpikeLines()}
+              {hrSpikeLines()}
+              {eventLines()}
               <Area dataKey="desc" type="monotone"
                 stroke={C.descent} strokeWidth={1.5} fill="url(#descGrad)"
                 dot={false} isAnimationActive={false} />
@@ -563,6 +743,9 @@ export default function DivePage() {
                   <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5}
                     label={{ value: '출수', position: 'insideTopLeft', fill: tokens.accent.teal, fontSize: 10 }} />
                 )}
+                {depthSpikeLines()}
+                {hrSpikeLines()}
+                {eventLines()}
                 <Area dataKey="hr" type="monotone"
                   stroke={C.hr} strokeWidth={1.5} fill="url(#hrGrad)"
                   dot={false} connectNulls isAnimationActive={false} />
@@ -594,6 +777,9 @@ export default function DivePage() {
                 {showPadLines && (
                   <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5} />
                 )}
+                {depthSpikeLines()}
+                {hrSpikeLines()}
+                {eventLines()}
                 <Area dataKey="temp" type="monotone"
                   stroke={C.temp} strokeWidth={1.5} fill="url(#tempGrad)"
                   dot={false} connectNulls isAnimationActive={false} />
@@ -601,6 +787,65 @@ export default function DivePage() {
             </ResponsiveContainer>
             <RateAxisLabel>°C</RateAxisLabel>
           </ChartCard>
+        )}
+        {/* ── Spike & Event Log ── */}
+        {(spikes.length > 0 || diveEvents.length > 0) && (
+          <Card>
+            <CardHeader>
+              <CardIconEl>⚡</CardIconEl>
+              <CardTitle>스파이크 &amp; 이벤트 로그</CardTitle>
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: tokens.text.muted }}>
+                스파이크 {spikes.length}건 · FIT 이벤트 {diveEvents.length}건
+              </span>
+            </CardHeader>
+            <LogTable>
+              <LogHead>
+                <LogRow>
+                  <LogTh>시각</LogTh>
+                  <LogTh>종류</LogTh>
+                  <LogTh>내용</LogTh>
+                  <LogTh style={{ textAlign: 'right' }}>수치</LogTh>
+                </LogRow>
+              </LogHead>
+              <tbody>
+                {/* Events first (they're from FIT device) */}
+                {diveEvents.map((e, i) => {
+                  const t = (e.timestamp.getTime() - t0Ms) / 1000;
+                  const col = severityColor(e.severity);
+                  return (
+                    <LogRow key={`evt-${i}`}>
+                      <LogTd $c={col}>{fmtTick(t)}</LogTd>
+                      <LogTd>
+                        <LogBadge $c={col}>
+                          {severityIcon(e.severity)} FIT 이벤트
+                        </LogBadge>
+                      </LogTd>
+                      <LogTd $c={col} style={{ fontWeight: 500 }}>{e.label}</LogTd>
+                      <LogTd style={{ textAlign: 'right', color: tokens.text.muted, fontFamily: 'monospace' }}>
+                        {e.event}
+                      </LogTd>
+                    </LogRow>
+                  );
+                })}
+                {/* Spikes by time */}
+                {spikes.map((s, i) => (
+                  <LogRow key={`sp-${i}`}>
+                    <LogTd $c={s.color}>{fmtTick(s.t)}</LogTd>
+                    <LogTd>
+                      <LogBadge $c={s.color}>
+                        {spikeIcon(s.type)}
+                        {s.type === 'hr' ? ' 심박 급변' : s.type === 'descent' ? ' 급하강' : ' 급상승'}
+                      </LogBadge>
+                    </LogTd>
+                    <LogTd $c={s.color} style={{ fontWeight: 500 }}>{s.label}</LogTd>
+                    <LogTd style={{ textAlign: 'right' }}>
+                      <RankBadge $rank={s.rank}>Top {s.rank}</RankBadge>
+                    </LogTd>
+                  </LogRow>
+                ))}
+              </tbody>
+            </LogTable>
+          </Card>
         )}
       </Content>
     </Page>
@@ -978,4 +1223,112 @@ const TtRow = styled.div<{ $c: string }>`
   gap: 16px;
   color: ${({ $c }) => $c};
   line-height: 1.8;
+`;
+
+// ── TopN control ──────────────────────────────────────────
+const TopNGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 12px;
+  padding-right: 12px;
+  border-right: 1px solid ${tokens.border.subtle};
+`;
+
+// ── Toggle chip controls ───────────────────────────────────
+const ToggleGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 10px;
+  padding-right: 10px;
+  border-right: 1px solid ${tokens.border.subtle};
+`;
+
+const ToggleChipEl = styled.button<{ $c: string; $on: boolean }>`
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 9px 3px 6px;
+  border-radius: 999px;
+  border: 1px solid ${({ $on, $c }) => $on ? $c + '88' : tokens.border.subtle};
+  background: ${({ $on, $c }) => $on ? $c + '18' : 'transparent'};
+  color: ${({ $on, $c }) => $on ? $c : tokens.text.muted};
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  &:hover { border-color: ${({ $c }) => $c + '66'}; color: ${({ $c }) => $c}; }
+`;
+
+const ToggleDotEl = styled.span<{ $c: string; $on: boolean }>`
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: ${({ $on, $c }) => $on ? $c : tokens.border.default};
+  transition: background 0.15s;
+  flex-shrink: 0;
+`;
+
+// ── Spike & event log ─────────────────────────────────────
+const LogTable = styled.table`
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+`;
+
+const LogHead = styled.thead`
+  border-bottom: 1px solid ${tokens.border.subtle};
+`;
+
+const LogRow = styled.tr`
+  border-bottom: 1px solid ${tokens.border.subtle};
+  &:last-child { border-bottom: none; }
+  &:hover td { background: ${tokens.bg.elevated}22; }
+`;
+
+const LogTh = styled.th`
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: ${tokens.text.muted};
+  padding: 6px 10px;
+  text-align: left;
+`;
+
+const LogTd = styled.td<{ $c?: string }>`
+  padding: 8px 10px;
+  color: ${({ $c }) => $c ?? tokens.text.secondary};
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+`;
+
+const LogBadge = styled.span<{ $c: string }>`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: ${({ $c }) => $c}18;
+  color: ${({ $c }) => $c};
+  border: 1px solid ${({ $c }) => $c}33;
+  white-space: nowrap;
+`;
+
+const RankBadge = styled.span<{ $rank: number }>`
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: ${({ $rank }) =>
+    $rank === 1 ? '#f43f5e22' : $rank === 2 ? '#f9731622' : '#f59e0b22'};
+  color: ${({ $rank }) =>
+    $rank === 1 ? '#f43f5e' : $rank === 2 ? '#f97316' : '#f59e0b'};
 `;

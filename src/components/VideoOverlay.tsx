@@ -3,7 +3,8 @@ import {
 } from 'react';
 import styled, { css, keyframes } from 'styled-components';
 import { tokens } from '../styles/GlobalStyle';
-import type { DetectedDive, DiveRecord } from '../types/dive';
+import type { DetectedDive, DiveRecord, DiveEvent, AlertSeverity } from '../types/dive';
+import type { DiveSpike } from '../utils/spikes';
 
 // ── Colour tokens ─────────────────────────────────────────
 const C = {
@@ -17,6 +18,26 @@ const C = {
 // ── Types ─────────────────────────────────────────────────
 interface Props {
   dive: DetectedDive;
+  spikes?: DiveSpike[];
+  events?: DiveEvent[];
+  showEvents?:  boolean;
+  showHR?:      boolean;
+  showDescent?: boolean;
+  showAscent?:  boolean;
+}
+
+interface AlertToastData {
+  label: string;
+  color: string;
+  icon: string;
+  id: number;
+}
+
+// Match DivePage palette: purple/violet for events
+function severityColor(s: AlertSeverity): string {
+  if (s === 'danger')  return '#c026d3'; // fuchsia
+  if (s === 'warning') return '#7c3aed'; // violet
+  return '#0ea5e9';                       // sky blue
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -67,7 +88,10 @@ function downsample(records: DiveRecord[], maxPts: number): DiveRecord[] {
 }
 
 // ── Component ─────────────────────────────────────────────
-export function VideoOverlay({ dive }: Props) {
+export function VideoOverlay({
+  dive, spikes = [], events = [],
+  showEvents = true, showHR = true, showDescent = true, showAscent = true,
+}: Props) {
   const [videoUrl, setVideoUrl]     = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isPlaying, setIsPlaying]   = useState(false);
@@ -84,11 +108,19 @@ export function VideoOverlay({ dive }: Props) {
   /** Fullscreen panel position (drag) */
   const [panelPos, setPanelPos] = useState({ x: 14, y: 14 });
 
-  const videoRef       = useRef<HTMLVideoElement>(null);
-  const seekRef        = useRef<HTMLInputElement>(null);
-  const wrapRef        = useRef<HTMLDivElement>(null);
-  const isPanelDrag    = useRef(false);
-  const panelDragStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const videoRef         = useRef<HTMLVideoElement>(null);
+  const seekRef          = useRef<HTMLInputElement>(null);
+  const wrapRef          = useRef<HTMLDivElement>(null);
+  const isPanelDrag      = useRef(false);
+  const panelDragStart   = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const prevDataElapsed  = useRef<number>(NaN);
+  const alertTimers      = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const alertIdRef       = useRef(0);
+
+  const [alertQueue, setAlertQueue] = useState<AlertToastData[]>([]);
+
+  // Cleanup all timers on unmount
+  useEffect(() => () => { alertTimers.current.forEach(clearTimeout); }, []);
 
   // ── Derived ──────────────────────────────────────────────
   const t0Ms = useMemo(
@@ -128,6 +160,52 @@ export function VideoOverlay({ dive }: Props) {
     : syncOffset > 0
       ? `영상이 데이터보다 ${syncOffset.toFixed(1)}초 먼저 시작`
       : `데이터가 영상보다 ${(-syncOffset).toFixed(1)}초 먼저 시작`;
+
+  // ── Alert crossing detection (queue-based) ───────────────
+  useEffect(() => {
+    const prev = prevDataElapsed.current;
+    const curr = dataElapsed;
+    prevDataElapsed.current = curr;
+
+    // Only fire when playing forward in active range
+    if (!isFinite(prev) || curr <= prev || curr < 0 || curr > diveDuration) return;
+
+    function enqueue(label: string, color: string, icon: string) {
+      const id = ++alertIdRef.current;
+      setAlertQueue((q) => [...q, { label, color, icon, id }]);
+      const timer = setTimeout(() => {
+        setAlertQueue((q) => q.filter((a) => a.id !== id));
+        alertTimers.current.delete(id);
+      }, 4000);
+      alertTimers.current.set(id, timer);
+    }
+
+    // Collect ALL triggered items in this frame (events + spikes)
+    // Events (FIT device confirmed) shown first — only if showEvents is on
+    if (showEvents) {
+      for (const evt of events) {
+        const t = (evt.timestamp.getTime() - dive.startTime.getTime()) / 1000;
+        if (t > prev && t <= curr) {
+          const icon = evt.severity === 'danger' ? '🟣'
+            : evt.severity === 'warning' ? '🔷' : '📋';
+          enqueue(evt.label, severityColor(evt.severity), icon);
+        }
+      }
+    }
+
+    // Then spikes — filtered by type toggles
+    for (const sp of spikes) {
+      if (sp.t > prev && sp.t <= curr) {
+        const visible =
+          (sp.type === 'hr'      && showHR)      ||
+          (sp.type === 'descent' && showDescent) ||
+          (sp.type === 'ascent'  && showAscent);
+        if (!visible) continue;
+        const icon = sp.type === 'hr' ? '❤️' : sp.type === 'descent' ? '↓' : '↑';
+        enqueue(sp.label, sp.color, icon);
+      }
+    }
+  }, [dataElapsed]); // intentionally minimal deps
 
   // ── SVG depth chart paths ────────────────────────────────
   const svgPaths = useMemo(() => {
@@ -170,6 +248,21 @@ export function VideoOverlay({ dive }: Props) {
       cy: (currentRecord.depthM / maxD) * 100,
     };
   }, [currentRecord, dive.maxDepthM, diveDuration, t0Ms]);
+
+  // ── SVG spike marker positions (for bottom panel chart) ──
+  const svgSpikeMarkers = useMemo(() => {
+    if (!diveDuration) return [];
+    return spikes
+      .filter((s) =>
+        (s.type === 'descent' && showDescent) ||
+        (s.type === 'ascent'  && showAscent)
+      )
+      .map((s) => ({
+        cx:   (s.t / diveDuration) * 1000,
+        color: s.color,
+        rank:  s.rank,
+      }));
+  }, [spikes, diveDuration, showDescent, showAscent]);
 
   // ── Drag & drop ──────────────────────────────────────────
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -516,6 +609,43 @@ export function VideoOverlay({ dive }: Props) {
                       <path d={svgPaths.line} fill="none" stroke={C.depth}
                         strokeWidth="2" vectorEffect="non-scaling-stroke" />
                     )}
+                    {/* Descent/ascent spike tick marks */}
+                    {svgSpikeMarkers.map((m) => (
+                      <line key={m.cx}
+                        x1={m.cx} y1={0} x2={m.cx} y2={100}
+                        stroke={m.color} strokeWidth={m.rank === 1 ? '2' : '1.2'}
+                        strokeDasharray="4 3"
+                        opacity={m.rank === 1 ? 0.9 : 0.55}
+                        vectorEffect="non-scaling-stroke" />
+                    ))}
+                    {/* HR spike tick marks */}
+                    {showHR && spikes
+                      .filter((s) => s.type === 'hr')
+                      .map((s) => {
+                        const cx = diveDuration ? (s.t / diveDuration) * 1000 : 0;
+                        return (
+                          <line key={`hr-${cx}`}
+                            x1={cx} y1={0} x2={cx} y2={100}
+                            stroke={s.color} strokeWidth={s.rank === 1 ? '2' : '1.2'}
+                            strokeDasharray="4 3"
+                            opacity={s.rank === 1 ? 0.9 : 0.55}
+                            vectorEffect="non-scaling-stroke" />
+                        );
+                      })}
+                    {/* Event markers (diveAlert etc.) — only when showEvents is on */}
+                    {showEvents && events.map((e) => {
+                      const cx = diveDuration
+                        ? ((e.timestamp.getTime() - dive.startTime.getTime()) / 1000 / diveDuration) * 1000
+                        : 0;
+                      if (cx < 0 || cx > 1000) return null;
+                      const col = severityColor(e.severity);
+                      return (
+                        <line key={cx}
+                          x1={cx} y1={0} x2={cx} y2={100}
+                          stroke={col} strokeWidth="2.5" strokeDasharray="5 3"
+                          opacity={0.95} vectorEffect="non-scaling-stroke" />
+                      );
+                    })}
                     {svgDotPos && (
                       <circle cx={svgDotPos.cx} cy={svgDotPos.cy} r="6"
                         fill={C.depth} stroke="rgba(255,255,255,0.9)"
@@ -626,6 +756,45 @@ export function VideoOverlay({ dive }: Props) {
                       <path d={panelChart.line} fill="none" stroke={panelChart.color}
                         strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
                     )}
+                    {/* Descent/ascent spike markers on depth & rate charts */}
+                    {(chartType === 'depth' || chartType === 'rate') && svgSpikeMarkers.map((m) => (
+                      <line key={`fs-sp-${m.cx}`}
+                        x1={m.cx} y1={0} x2={m.cx} y2={100}
+                        stroke={m.color}
+                        strokeWidth={m.rank === 1 ? '2' : '1.2'}
+                        strokeDasharray="4 3"
+                        opacity={m.rank === 1 ? 0.9 : 0.55}
+                        vectorEffect="non-scaling-stroke" />
+                    ))}
+                    {/* HR spike markers on depth chart (same as main page) */}
+                    {chartType === 'depth' && showHR && spikes
+                      .filter((s) => s.type === 'hr')
+                      .map((s) => {
+                        const cx = diveDuration ? (s.t / diveDuration) * 1000 : 0;
+                        return (
+                          <line key={`fs-hr-${cx}`}
+                            x1={cx} y1={0} x2={cx} y2={100}
+                            stroke={s.color}
+                            strokeWidth={s.rank === 1 ? '2' : '1.2'}
+                            strokeDasharray="4 3"
+                            opacity={s.rank === 1 ? 0.9 : 0.55}
+                            vectorEffect="non-scaling-stroke" />
+                        );
+                      })}
+                    {/* FIT event markers on all chart types */}
+                    {showEvents && events.map((e) => {
+                      const cx = diveDuration
+                        ? ((e.timestamp.getTime() - dive.startTime.getTime()) / 1000 / diveDuration) * 1000
+                        : 0;
+                      if (cx < 0 || cx > 1000) return null;
+                      const col = severityColor(e.severity);
+                      return (
+                        <line key={`fs-evt-${cx}`}
+                          x1={cx} y1={0} x2={cx} y2={100}
+                          stroke={col} strokeWidth="2.5" strokeDasharray="5 3"
+                          opacity={0.95} vectorEffect="non-scaling-stroke" />
+                      );
+                    })}
                     {panelDot && (
                       <circle cx={panelDot.cx} cy={panelDot.cy} r="7"
                         fill={panelChart.color} stroke="rgba(255,255,255,0.9)"
@@ -657,6 +826,18 @@ export function VideoOverlay({ dive }: Props) {
                   <span style={{ fontSize: 32 }}>🎬</span>
                   <span style={{ fontSize: 14, color: tokens.text.secondary }}>영상 교체</span>
                 </DragReplaceOverlay>
+              )}
+
+              {/* Alert toast queue — stacks above the bottom metrics panel */}
+              {alertQueue.length > 0 && (
+                <AlertToastStack>
+                  {alertQueue.map((a) => (
+                    <AlertToastEl key={a.id} $c={a.color}>
+                      <AlertToastIcon>{a.icon}</AlertToastIcon>
+                      <AlertToastLabel>{a.label}</AlertToastLabel>
+                    </AlertToastEl>
+                  ))}
+                </AlertToastStack>
               )}
 
               {/* Corner fullscreen toggle (always visible on hover) */}
@@ -787,6 +968,17 @@ export function VideoOverlay({ dive }: Props) {
 const pulse = keyframes`
   0%, 100% { transform: scale(1); }
   50%       { transform: scale(1.15); }
+`;
+
+const slideIn = keyframes`
+  from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+`;
+
+const fadeOut = keyframes`
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
 `;
 
 // ── Styled Components ─────────────────────────────────────
@@ -999,6 +1191,51 @@ const ChartSvg = styled.svg`
   height: 48px;
   display: block;
   overflow: visible;
+`;
+
+/* ── Alert toast stack ── */
+/** Container floats just above the BottomPanel metrics area */
+const AlertToastStack = styled.div`
+  position: absolute;
+  /* sit above BottomPanel (≈ 160px) + VideoTimeline (5px) */
+  bottom: 172px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  z-index: 25;
+  pointer-events: none;
+`;
+
+const AlertToastEl = styled.div<{ $c: string }>`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 20px;
+  background: rgba(4, 8, 18, 0.92);
+  backdrop-filter: blur(14px);
+  border: 1.5px solid ${({ $c }) => $c}88;
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 3px ${({ $c }) => $c}18,
+    0 6px 24px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  animation: ${slideIn} 0.2s ease both, ${fadeOut} 4s ease forwards;
+`;
+
+const AlertToastIcon = styled.span`
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+`;
+
+const AlertToastLabel = styled.span`
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+  letter-spacing: 0.01em;
 `;
 
 /* ── Status badge ── */
