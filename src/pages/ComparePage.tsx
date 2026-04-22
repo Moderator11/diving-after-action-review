@@ -49,6 +49,23 @@ function buildDepthSeries(dive: DetectedDive) {
   }));
 }
 
+function buildRateSeries(dive: DetectedDive) {
+  const t0   = dive.startTime.getTime();
+  const recs = dive.records;
+  return recs.map((r, i) => {
+    const t = Math.round((r.timestamp.getTime() - t0) / 1000);
+    if (i === 0) return { t, desc: 0, asc: 0 };
+    const prev  = recs[i - 1];
+    const dt    = (r.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
+    const rate  = dt > 0 ? (r.depthM - prev.depthM) / dt : 0;
+    return {
+      t,
+      desc: rate >  0.02 ? parseFloat(rate.toFixed(2)) : 0,
+      asc:  rate < -0.02 ? parseFloat(Math.abs(rate).toFixed(2)) : 0,
+    };
+  });
+}
+
 
 // ── Main page ─────────────────────────────────────────────
 export default function ComparePage() {
@@ -97,6 +114,31 @@ export default function ComparePage() {
     return [...map.entries()]
       .sort(([a], [b]) => a - b)
       .map(([, v]) => v);
+  }, [selectedArr, dives]);
+
+  // ── Rate chart data ───────────────────────────────────
+  const rateChartData = useMemo(() => {
+    if (selectedArr.length === 0) return [];
+    const map = new Map<number, Record<string, number | null>>();
+    selectedArr.forEach((diveIdx) => {
+      const series = buildRateSeries(dives[diveIdx]);
+      series.forEach(({ t, desc, asc }) => {
+        if (!map.has(t)) map.set(t, { t });
+        const row = map.get(t)!;
+        row[`desc_${diveIdx}`] = desc;
+        row[`asc_${diveIdx}`]  = asc;
+      });
+    });
+    return [...map.entries()].sort(([a], [b]) => a - b).map(([, v]) => v);
+  }, [selectedArr, dives]);
+
+  const maxRate = useMemo(() => {
+    if (selectedArr.length === 0) return 1;
+    const m = Math.max(
+      ...selectedArr.map((i) => Math.max(dives[i].maxDescentRateMps, dives[i].maxAscentRateMps)),
+      0.2,
+    );
+    return parseFloat((Math.ceil(m * 10) / 10 + 0.1).toFixed(1));
   }, [selectedArr, dives]);
 
   // Max depth across all selected dives
@@ -289,6 +331,99 @@ export default function ComparePage() {
                     ))}
                   </ComposedChart>
                 </ResponsiveContainer>
+              </ChartCard>
+
+              {/* ── Rate comparison chart ── */}
+              <ChartCard>
+                <ChartCardHeader>
+                  <ChartCardIcon>🚀</ChartCardIcon>
+                  <ChartCardTitle>하강 · 상승 속도 비교</ChartCardTitle>
+                  <ChartCardNote>실선 = 하강 &nbsp;·&nbsp; 점선 = 상승</ChartCardNote>
+                </ChartCardHeader>
+                <ResponsiveContainer width="100%" height={220}>
+                  <ComposedChart data={rateChartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <defs>
+                      {selectedArr.map((diveIdx, ci) => (
+                        <linearGradient key={diveIdx} id={`rg_${diveIdx}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%"   stopColor={diveColor(ci)} stopOpacity={0.2} />
+                          <stop offset="100%" stopColor={diveColor(ci)} stopOpacity={0.01} />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
+                    <XAxis
+                      dataKey="t" type="number" domain={['dataMin', 'dataMax']}
+                      tickFormatter={fmtTick}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+                      axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      domain={[0, maxRate]}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36}
+                    />
+                    <Tooltip
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        return (
+                          <TtBox>
+                            <TtTime>{fmtTick(Number(label))}</TtTime>
+                            {selectedArr.map((i, ci) => {
+                              const d = payload.find((x: any) => x.dataKey === `desc_${i}`);
+                              const a = payload.find((x: any) => x.dataKey === `asc_${i}`);
+                              const dv = d?.value as number | undefined;
+                              const av = a?.value as number | undefined;
+                              if ((!dv || dv === 0) && (!av || av === 0)) return null;
+                              return (
+                                <TtRow key={i} $c={diveColor(ci)}>
+                                  <span>#{i + 1}</span>
+                                  <strong>
+                                    {dv && dv > 0 ? `↓${dv.toFixed(2)}` : ''}
+                                    {av && av > 0 ? `↑${av.toFixed(2)}` : ''}
+                                    {' '}m/s
+                                  </strong>
+                                </TtRow>
+                              );
+                            })}
+                          </TtBox>
+                        );
+                      }}
+                    />
+                    <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
+                    {/* Descent: solid area per dive */}
+                    {selectedArr.map((diveIdx, ci) => (
+                      <Area
+                        key={`desc-${diveIdx}`}
+                        dataKey={`desc_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1} 하강`}
+                        type="monotone"
+                        stroke={diveColor(ci)}
+                        strokeWidth={1.8}
+                        fill={`url(#rg_${diveIdx})`}
+                        dot={false}
+                        connectNulls
+                        isAnimationActive={false}
+                        activeDot={{ r: 3, fill: diveColor(ci) }}
+                      />
+                    ))}
+                    {/* Ascent: dashed line per dive */}
+                    {selectedArr.map((diveIdx, ci) => (
+                      <Line
+                        key={`asc-${diveIdx}`}
+                        dataKey={`asc_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1} 상승`}
+                        type="monotone"
+                        stroke={diveColor(ci)}
+                        strokeWidth={1.5}
+                        strokeDasharray="5 3"
+                        dot={false}
+                        connectNulls
+                        isAnimationActive={false}
+                        activeDot={{ r: 3, fill: diveColor(ci) }}
+                      />
+                    ))}
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <AxisLabel>m / s</AxisLabel>
               </ChartCard>
 
               {/* ── HR comparison chart ── */}
