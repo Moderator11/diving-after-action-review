@@ -789,64 +789,73 @@ export default function DivePage() {
           </ChartCard>
         )}
         {/* ── Spike & Event Log ── */}
-        {(spikes.length > 0 || diveEvents.length > 0) && (
-          <Card>
-            <CardHeader>
-              <CardIconEl>⚡</CardIconEl>
-              <CardTitle>스파이크 &amp; 이벤트 로그</CardTitle>
-              <span style={{ marginLeft: 'auto', fontSize: 11, color: tokens.text.muted }}>
-                스파이크 {spikes.length}건 · FIT 이벤트 {diveEvents.length}건
-              </span>
-            </CardHeader>
-            <LogTable>
-              <LogHead>
-                <LogRow>
-                  <LogTh>시각</LogTh>
-                  <LogTh>종류</LogTh>
-                  <LogTh>내용</LogTh>
-                  <LogTh style={{ textAlign: 'right' }}>수치</LogTh>
-                </LogRow>
-              </LogHead>
-              <tbody>
-                {/* Events first (they're from FIT device) */}
-                {diveEvents.map((e, i) => {
-                  const t = (e.timestamp.getTime() - t0Ms) / 1000;
-                  const col = severityColor(e.severity);
-                  return (
-                    <LogRow key={`evt-${i}`}>
-                      <LogTd $c={col}>{fmtTick(t)}</LogTd>
+        {(() => {
+          const visibleEvents = showEvents ? diveEvents : [];
+          const visibleSpikes = spikes.filter((s) =>
+            (s.type === 'hr'      && showHR)      ||
+            (s.type === 'descent' && showDescent) ||
+            (s.type === 'ascent'  && showAscent)
+          );
+          if (visibleEvents.length === 0 && visibleSpikes.length === 0) return null;
+          return (
+            <Card>
+              <CardHeader>
+                <CardIconEl>⚡</CardIconEl>
+                <CardTitle>스파이크 &amp; 이벤트 로그</CardTitle>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: tokens.text.muted }}>
+                  스파이크 {visibleSpikes.length}건 · FIT 이벤트 {visibleEvents.length}건
+                </span>
+              </CardHeader>
+              <LogTable>
+                <LogHead>
+                  <LogRow>
+                    <LogTh>시각</LogTh>
+                    <LogTh>종류</LogTh>
+                    <LogTh>내용</LogTh>
+                    <LogTh style={{ textAlign: 'right' }}>수치</LogTh>
+                  </LogRow>
+                </LogHead>
+                <tbody>
+                  {/* Events first (they're from FIT device) */}
+                  {visibleEvents.map((e, i) => {
+                    const t = (e.timestamp.getTime() - t0Ms) / 1000;
+                    const col = severityColor(e.severity);
+                    return (
+                      <LogRow key={`evt-${i}`}>
+                        <LogTd $c={col}>{fmtTick(t)}</LogTd>
+                        <LogTd>
+                          <LogBadge $c={col}>
+                            {severityIcon(e.severity)} FIT 이벤트
+                          </LogBadge>
+                        </LogTd>
+                        <LogTd $c={col} style={{ fontWeight: 500 }}>{e.label}</LogTd>
+                        <LogTd style={{ textAlign: 'right', color: tokens.text.muted, fontFamily: 'monospace' }}>
+                          {e.event}
+                        </LogTd>
+                      </LogRow>
+                    );
+                  })}
+                  {/* Spikes by time */}
+                  {visibleSpikes.map((s, i) => (
+                    <LogRow key={`sp-${i}`}>
+                      <LogTd $c={s.color}>{fmtTick(s.t)}</LogTd>
                       <LogTd>
-                        <LogBadge $c={col}>
-                          {severityIcon(e.severity)} FIT 이벤트
+                        <LogBadge $c={s.color}>
+                          {spikeIcon(s.type)}
+                          {s.type === 'hr' ? ' 심박 급변' : s.type === 'descent' ? ' 급하강' : ' 급상승'}
                         </LogBadge>
                       </LogTd>
-                      <LogTd $c={col} style={{ fontWeight: 500 }}>{e.label}</LogTd>
-                      <LogTd style={{ textAlign: 'right', color: tokens.text.muted, fontFamily: 'monospace' }}>
-                        {e.event}
+                      <LogTd $c={s.color} style={{ fontWeight: 500 }}>{s.label}</LogTd>
+                      <LogTd style={{ textAlign: 'right' }}>
+                        <RankBadge $rank={s.rank}>Top {s.rank}</RankBadge>
                       </LogTd>
                     </LogRow>
-                  );
-                })}
-                {/* Spikes by time */}
-                {spikes.map((s, i) => (
-                  <LogRow key={`sp-${i}`}>
-                    <LogTd $c={s.color}>{fmtTick(s.t)}</LogTd>
-                    <LogTd>
-                      <LogBadge $c={s.color}>
-                        {spikeIcon(s.type)}
-                        {s.type === 'hr' ? ' 심박 급변' : s.type === 'descent' ? ' 급하강' : ' 급상승'}
-                      </LogBadge>
-                    </LogTd>
-                    <LogTd $c={s.color} style={{ fontWeight: 500 }}>{s.label}</LogTd>
-                    <LogTd style={{ textAlign: 'right' }}>
-                      <RankBadge $rank={s.rank}>Top {s.rank}</RankBadge>
-                    </LogTd>
-                  </LogRow>
-                ))}
-              </tbody>
-            </LogTable>
-          </Card>
-        )}
+                  ))}
+                </tbody>
+              </LogTable>
+            </Card>
+          );
+        })()}
       </Content>
     </Page>
   );
