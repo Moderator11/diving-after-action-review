@@ -4,7 +4,6 @@ import {
   ResponsiveContainer,
   LineChart,
   Line,
-  BarChart,
   Bar,
   ComposedChart,
   XAxis,
@@ -103,7 +102,7 @@ export default function TrendsPage() {
                       fontSize: 12,
                     }}
                     labelFormatter={(v) => String(v)}
-                    formatter={(value: number) => [`${value} m`, '최대 수심']}
+                    formatter={(value) => [`${value} m`, '최대 수심']}
                   />
                   <Line
                     type="monotone"
@@ -228,7 +227,7 @@ export default function TrendsPage() {
                       fontSize: 12,
                     }}
                     labelFormatter={(v) => String(v)}
-                    formatter={(value: number | null) =>
+                    formatter={(value) =>
                       value != null ? [`${value} bpm`, '최고 심박'] : ['-', '최고 심박']
                     }
                   />
