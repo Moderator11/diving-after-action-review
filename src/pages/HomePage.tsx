@@ -2,7 +2,7 @@ import { useCallback, useState, useRef, useEffect } from 'react';
 import styled, { keyframes, css } from 'styled-components';
 import { useNavigate } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
-import { parseFitFile } from '../utils/parseFit';
+import { parseFitFile, formatDate, formatDuration } from '../utils/parseFit';
 import { useDiveSession } from '../store/DiveContext';
 import favicon from '/favicon.svg'
 
@@ -10,48 +10,70 @@ type DropState = 'idle' | 'hover' | 'loading' | 'error';
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const { setSession } = useDiveSession();
+  const { setSession, sessions, addSession, removeSession } = useDiveSession();
   const [dropState, setDropState] = useState<DropState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [progress, setProgress] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const processFile = useCallback(
-    async (file: File) => {
-      if (!file.name.toLowerCase().endsWith('.fit')) {
+  const processFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const fileArray = Array.from(files);
+      const fitFiles = fileArray.filter((f) => f.name.toLowerCase().endsWith('.fit'));
+
+      if (fitFiles.length === 0) {
         setDropState('error');
         setErrorMsg('.fit 파일만 지원됩니다.');
         return;
       }
 
       setDropState('loading');
-      setProgress('파일 읽는 중…');
+      setProgress(`파일 읽는 중… (0/${fitFiles.length})`);
 
-      try {
-        const buffer = await file.arrayBuffer();
-        setProgress('데이터 파싱 중…');
-        const session = await parseFitFile(buffer, file.name);
-        setSession(session);
-        navigate('/session');
-      } catch (err) {
-        console.error(err);
+      let successCount = 0;
+      let lastSession = null;
+
+      for (let i = 0; i < fitFiles.length; i++) {
+        const file = fitFiles[i];
+        setProgress(`파싱 중… (${i + 1}/${fitFiles.length}) ${file.name}`);
+        try {
+          const buffer = await file.arrayBuffer();
+          const session = await parseFitFile(buffer, file.name);
+          addSession(session);
+          lastSession = session;
+          successCount++;
+        } catch (err) {
+          console.error(`Failed to parse ${file.name}:`, err);
+        }
+      }
+
+      if (successCount === 0) {
         setDropState('error');
-        setErrorMsg(
-          err instanceof Error ? err.message : '파싱 중 오류가 발생했습니다.'
-        );
+        setErrorMsg('파싱 중 오류가 발생했습니다.');
+        return;
+      }
+
+      setDropState('idle');
+      setProgress('');
+      if (inputRef.current) inputRef.current.value = '';
+
+      // 단일 파일이면 바로 세션으로 이동, 여러 파일이면 홈에 목록 표시
+      if (fitFiles.length === 1 && lastSession) {
+        setSession(lastSession);
+        navigate('/session');
       }
     },
-    [navigate, setSession]
+    [addSession, setSession, navigate]
   );
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDropState('idle');
-      const file = e.dataTransfer.files?.[0];
-      if (file) processFile(file);
+      const files = e.dataTransfer.files;
+      if (files && files.length > 0) processFiles(files);
     },
-    [processFile]
+    [processFiles]
   );
 
   const onDragOver = (e: React.DragEvent) => {
@@ -62,14 +84,19 @@ export default function HomePage() {
   const onDragLeave = () => setDropState('idle');
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) processFile(file);
+    const files = e.target.files;
+    if (files && files.length > 0) processFiles(files);
   };
 
   const retry = () => {
     setDropState('idle');
     setErrorMsg('');
     if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const handleCardClick = (s: typeof sessions[0]) => {
+    setSession(s);
+    navigate('/session');
   };
 
     // ── Logo expand animation ────────────────────────────────────────────────
@@ -165,6 +192,7 @@ export default function HomePage() {
             ref={inputRef}
             type="file"
             accept=".fit"
+            multiple
             style={{ display: 'none' }}
             onChange={onFileChange}
           />
@@ -195,12 +223,52 @@ export default function HomePage() {
                 {dropState === 'hover' ? '놓으세요!' : '.fit 파일을 드롭하세요'}
               </StateTitle>
               <StateDesc>
-                Garmin · Suunto · Mares 등 다이빙 컴퓨터 .fit 파일 지원
+                Garmin · Suunto · Mares 등 다이빙 컴퓨터 .fit 파일 지원<br />
+                여러 파일을 한 번에 업로드할 수 있습니다
               </StateDesc>
               <BrowseHint>또는 클릭하여 파일 선택</BrowseHint>
             </StateContent>
           )}
         </DropZone>
+
+        {/* ── 업로드된 세션 목록 ── */}
+        {sessions.length > 0 && (
+          <SessionListSection>
+            <SessionListHeader>
+              <SessionListTitle>📁 업로드된 세션 ({sessions.length}개)</SessionListTitle>
+              {sessions.length >= 2 && (
+                <TrendsButton onClick={() => navigate('/trends')}>
+                  📈 트렌드 보기
+                </TrendsButton>
+              )}
+            </SessionListHeader>
+            <SessionGrid>
+              {sessions.map((s) => (
+                <SessionCard key={s.filename} onClick={() => handleCardClick(s)}>
+                  <SessionCardTop>
+                    <SessionCardIcon>🤿</SessionCardIcon>
+                    <SessionCardName title={s.filename}>{s.filename}</SessionCardName>
+                    <DeleteButton
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeSession(s.filename);
+                      }}
+                      title="삭제"
+                    >
+                      ✕
+                    </DeleteButton>
+                  </SessionCardTop>
+                  <SessionCardDate>{formatDate(s.stats.sessionDate)}</SessionCardDate>
+                  <SessionCardMeta>
+                    <MetaPill>🏊 {s.stats.totalDives}회 다이브</MetaPill>
+                    <MetaPill>🎯 {s.stats.maxDepthM.toFixed(1)}m</MetaPill>
+                    <MetaPill>⏱ {formatDuration(s.stats.totalDurationSeconds)}</MetaPill>
+                  </SessionCardMeta>
+                </SessionCard>
+              ))}
+            </SessionGrid>
+          </SessionListSection>
+        )}
 
         <Footer>
           <FooterText>
@@ -266,7 +334,7 @@ const Background = styled.div`
 
 const Container = styled.div`
   width: 100%;
-  max-width: 520px;
+  max-width: 720px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -321,7 +389,7 @@ const LogoSub = styled.p`
 
 const DropZone = styled.div<{ $state: DropState }>`
   width: 100%;
-  min-height: 260px;
+  min-height: 220px;
   border: 2px dashed
     ${({ $state }) =>
       $state === 'hover' ? tokens.accent.cyan
@@ -431,6 +499,125 @@ const FooterText = styled.p`
   line-height: 1.6;
 `;
 
+/* ── Session list ──────────────────────────────────────── */
+const SessionListSection = styled.section`
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+`;
+
+const SessionListHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+`;
+
+const SessionListTitle = styled.h2`
+  font-size: 13px;
+  font-weight: 600;
+  color: ${tokens.text.secondary};
+  letter-spacing: 0.04em;
+`;
+
+const TrendsButton = styled.button`
+  font-size: 12px;
+  color: ${tokens.accent.cyan};
+  background: rgba(6,182,212,0.08);
+  border: 1px solid rgba(6,182,212,0.3);
+  border-radius: ${tokens.radius.md};
+  padding: 5px 14px;
+  transition: all 0.2s;
+  white-space: nowrap;
+
+  &:hover {
+    background: rgba(6,182,212,0.16);
+    border-color: ${tokens.accent.cyan};
+  }
+`;
+
+const SessionGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+`;
+
+const SessionCard = styled.div`
+  background: ${tokens.bg.surface};
+  border: 1px solid ${tokens.border.subtle};
+  border-radius: ${tokens.radius.lg};
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  &:hover {
+    border-color: ${tokens.accent.cyan};
+    box-shadow: 0 0 16px rgba(6,182,212,0.1);
+    transform: translateY(-1px);
+  }
+`;
+
+const SessionCardTop = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const SessionCardIcon = styled.span`
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+`;
+
+const SessionCardName = styled.span`
+  font-size: 12px;
+  font-weight: 600;
+  color: ${tokens.text.primary};
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const DeleteButton = styled.button`
+  font-size: 11px;
+  color: ${tokens.text.muted};
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+
+  &:hover {
+    color: ${tokens.accent.danger};
+    background: rgba(239,68,68,0.1);
+  }
+`;
+
+const SessionCardDate = styled.div`
+  font-size: 11px;
+  color: ${tokens.text.muted};
+`;
+
+const SessionCardMeta = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+`;
+
+const MetaPill = styled.span`
+  font-size: 10px;
+  color: ${tokens.text.secondary};
+  background: ${tokens.bg.elevated};
+  border: 1px solid ${tokens.border.subtle};
+  border-radius: 99px;
+  padding: 2px 8px;
+`;
 
 //===============
 

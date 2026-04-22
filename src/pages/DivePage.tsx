@@ -11,6 +11,10 @@ import {
   Tooltip,
   ComposedChart,
   ReferenceLine,
+  ReferenceArea,
+  ScatterChart,
+  Scatter,
+  ZAxis,
 } from 'recharts';
 import { tokens } from '../styles/GlobalStyle';
 import { useDiveSession } from '../store/DiveContext';
@@ -82,10 +86,12 @@ function DiveSummaryCard({
   dive,
   diveIdx,
   session,
+  freefallStart,
 }: {
   dive: DetectedDive;
   diveIdx: number;
   session: DiveSession;
+  freefallStart: { t: number; depth: number } | null;
 }) {
   const diveEndTime  = dive.records[dive.records.length - 1].timestamp;
   const nextDive     = session.dives[diveIdx + 1];
@@ -122,6 +128,36 @@ function DiveSummaryCard({
     .map((r) => r.heartRate as number);
   const postDiveAvgHR = postDiveHRs.length > 0
     ? Math.round(postDiveHRs.reduce((a, b) => a + b, 0) / postDiveHRs.length)
+    : null;
+
+  // ── Feature 2: 잠수 반사 (Bradycardia) 감지 ────────────
+  const earlyRecs = dive.records.filter((r) => {
+    const t = (r.timestamp.getTime() - dive.startTime.getTime()) / 1000;
+    return t >= 0 && t <= 30 && r.heartRate != null;
+  });
+  const hrAtEntry  = earlyRecs[0]?.heartRate ?? null;
+  const minHRin30s = earlyRecs.length > 0
+    ? Math.min(...earlyRecs.map((r) => r.heartRate!))
+    : null;
+  const reflexDrop = hrAtEntry != null && minHRin30s != null
+    ? hrAtEntry - minHRin30s
+    : null;
+
+  // ── Feature 3: 심박 회복 속도 ─────────────────────────
+  const targetHR = preDiveAvgHR ?? 70;
+  const recoveryRecs = session.records.filter((r) => {
+    const t = r.timestamp.getTime();
+    return t > diveEndMs && t <= diveEndMs + 5 * 60_000 && r.heartRate != null;
+  });
+  const recoveredRec = recoveryRecs.find((r) => r.heartRate! <= targetHR + 5);
+  const recoverySeconds = recoveredRec
+    ? (recoveredRec.timestamp.getTime() - diveEndMs) / 1000
+    : null;
+
+  // ── Feature 7: 덕다이브 효율 ──────────────────────────
+  const to5m = dive.records.find((r) => r.depthM >= 5);
+  const duckDiveSeconds = to5m
+    ? (to5m.timestamp.getTime() - dive.startTime.getTime()) / 1000
     : null;
 
   // Narrative
@@ -183,6 +219,45 @@ function DiveSummaryCard({
           <SummaryMetric>
             <SummaryMetricLabel>평균 수온</SummaryMetricLabel>
             <SummaryMetricValue $c={C.temp}>{dive.avgTempC}°C</SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {/* Feature 2: 잠수 반사 */}
+        {reflexDrop != null && reflexDrop >= 8 && (
+          <SummaryMetric>
+            <SummaryMetricLabel>잠수 반사</SummaryMetricLabel>
+            <SummaryMetricValue $c="#06b6d4">-{reflexDrop} bpm</SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {/* Feature 3: 심박 회복 */}
+        {recoverySeconds != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>심박 회복</SummaryMetricLabel>
+            <SummaryMetricValue $c={tokens.accent.teal}>
+              {formatDuration(recoverySeconds)}
+            </SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {/* Feature 6: 프리폴 시작 */}
+        {freefallStart != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>프리폴 시작</SummaryMetricLabel>
+            <SummaryMetricValue $c="#a78bfa">
+              {freefallStart.depth.toFixed(1)}m
+            </SummaryMetricValue>
+          </SummaryMetric>
+        )}
+        {/* Feature 7: 덕다이브 효율 */}
+        {duckDiveSeconds != null && (
+          <SummaryMetric>
+            <SummaryMetricLabel>덕다이브 5m</SummaryMetricLabel>
+            <SummaryMetricValue $c={tokens.accent.cyan}>
+              {duckDiveSeconds.toFixed(1)}s{' '}
+              {duckDiveSeconds < 8 ? (
+                <SummaryBadge $c={tokens.accent.cyan}>빠름</SummaryBadge>
+              ) : duckDiveSeconds > 12 ? (
+                <SummaryBadge $c="#f59e0b">느림</SummaryBadge>
+              ) : null}
+            </SummaryMetricValue>
           </SummaryMetric>
         )}
         {surfaceAfter != null && (
@@ -401,6 +476,59 @@ export default function DivePage() {
     return Math.ceil(m / 5) * 5;
   }, [rateData]);
 
+  // ── Feature 6: 프리폴 구간 감지 ───────────────────────
+  const freefallStart = useMemo<{ t: number; depth: number } | null>(() => {
+    const recs = dive.records;
+    for (let i = 2; i < recs.length - 2; i++) {
+      const dt1 = (recs[i].timestamp.getTime() - recs[i - 1].timestamp.getTime()) / 1000;
+      const dt2 = (recs[i + 1].timestamp.getTime() - recs[i].timestamp.getTime()) / 1000;
+      if (dt1 <= 0 || dt2 <= 0) continue;
+      const rate1 = (recs[i].depthM - recs[i - 1].depthM) / dt1;
+      const rate2 = (recs[i + 1].depthM - recs[i].depthM) / dt2;
+      if (rate1 > 0.1 && rate2 > rate1 * 1.3 && recs[i].depthM >= 5) {
+        const t = (recs[i].timestamp.getTime() - dive.startTime.getTime()) / 1000;
+        return { t, depth: recs[i].depthM };
+      }
+    }
+    return null;
+  }, [dive]);
+
+  // ── Feature 4: 수심-심박 산점도 데이터 ────────────────
+  const hrScatterData = useMemo(() => {
+    return dive.records
+      .filter((r) => r.heartRate != null)
+      .map((r) => ({ depth: r.depthM, hr: r.heartRate as number }));
+  }, [dive]);
+
+  const hasHRScatter = hrScatterData.length > 0;
+
+  // ── Feature 5: 수심-수온 산점도 + 써모클라인 감지 ──────
+  const tempScatterData = useMemo(() => {
+    return dive.records
+      .filter((r) => r.temperatureC != null)
+      .map((r) => ({ depth: r.depthM, temp: r.temperatureC as number }));
+  }, [dive]);
+
+  const hasTempScatter = tempScatterData.length > 0;
+
+  const thermoclineDepth = useMemo<number | null>(() => {
+    if (tempScatterData.length < 2) return null;
+    const sorted = [...tempScatterData].sort((a, b) => a.depth - b.depth);
+    let maxGrad = 0;
+    let thermDepth: number | null = null;
+    for (let i = 1; i < sorted.length; i++) {
+      const dd = sorted[i].depth - sorted[i - 1].depth;
+      if (dd <= 0) continue;
+      const grad = Math.abs((sorted[i].temp - sorted[i - 1].temp) / dd);
+      if (grad > maxGrad) {
+        maxGrad = grad;
+        thermDepth = sorted[i - 1].depth;
+      }
+    }
+    // Only report if gradient is meaningful (>0.3°C/m)
+    return maxGrad > 0.3 ? thermDepth : null;
+  }, [tempScatterData]);
+
   const handlePrePad  = useCallback((v: number) => setPrePad(v),  []);
   const handlePostPad = useCallback((v: number) => setPostPad(v), []);
 
@@ -556,6 +684,7 @@ export default function DivePage() {
           <Tab $active={true}  onClick={() => {}}>🤿 다이브 상세</Tab>
           <Tab $active={false} onClick={() => navigate('/compare')}>⚖️ 비교</Tab>
           <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
+          <Tab $active={location.pathname === '/trends'} onClick={() => navigate('/trends')}>📈 트렌드</Tab>
         </TabNav>
       </TopBar>
 
@@ -572,7 +701,7 @@ export default function DivePage() {
         </DiveNav>
 
         {/* ── Summary card ── */}
-        <DiveSummaryCard dive={dive} diveIdx={diveIdx} session={session} />
+        <DiveSummaryCard dive={dive} diveIdx={diveIdx} session={session} freefallStart={freefallStart} />
 
         {/* ── Video overlay ── */}
         <VideoOverlay
@@ -653,6 +782,14 @@ export default function DivePage() {
                   label={{ value: '출수', position: 'insideTopLeft', fill: tokens.accent.teal, fontSize: 10 }}
                 />
               )}
+              {/* Feature 6: 프리폴 시작 ReferenceLine */}
+              {freefallStart != null && (
+                <ReferenceLine
+                  yAxisId="d" x={freefallStart.t}
+                  stroke="#a78bfa" strokeDasharray="4 3" strokeWidth={1.5}
+                  label={{ value: '🪂프리폴 시작', position: 'insideTopRight', fill: '#a78bfa', fontSize: 9 }}
+                />
+              )}
               {/* Spike & event lines */}
               {depthSpikeLines('d')}
               {hrSpikeLines('d')}
@@ -696,6 +833,12 @@ export default function DivePage() {
               {showPadLines && (
                 <ReferenceLine x={diveDurSec} stroke={tokens.accent.teal} strokeDasharray="4 3" strokeWidth={1.5} />
               )}
+              {/* Feature 1: 상승 위험 구간 하이라이트 */}
+              <ReferenceArea
+                y1={0.8} y2={maxRate}
+                fill="#f43f5e" fillOpacity={0.08}
+                label={{ value: '⚠️ 위험 (>0.8m/s)', position: 'insideRight', fontSize: 9, fill: '#f43f5e' }}
+              />
               {depthSpikeLines()}
               {hrSpikeLines()}
               {eventLines()}
@@ -788,6 +931,101 @@ export default function DivePage() {
             <RateAxisLabel>°C</RateAxisLabel>
           </ChartCard>
         )}
+        {/* ── Feature 4: 수심-심박 산점도 ── */}
+        {hasHRScatter && (
+          <ChartCard title="수심-심박 분포" icon="💓">
+            <ChartLegend>
+              <LegDot $c="#f97316" /> 수심 vs 심박
+            </ChartLegend>
+            <p style={{ fontSize: 11, color: tokens.text.muted, marginBottom: 10 }}>
+              깊을수록 심박이 낮아지면 잠수 반사가 잘 작동하고 있습니다
+            </p>
+            <ResponsiveContainer width="100%" height={220}>
+              <ScatterChart margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} />
+                <XAxis
+                  dataKey="hr" type="number" name="심박" domain={[40, 180]}
+                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+                  axisLine={{ stroke: tokens.border.subtle }}
+                  label={{ value: 'bpm', position: 'insideBottomRight', offset: -4, fill: tokens.text.muted, fontSize: 10 }}
+                />
+                <YAxis
+                  dataKey="depth" type="number" name="수심" reversed domain={[0, maxDepth]}
+                  tickFormatter={(v) => `${v}m`}
+                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44}
+                />
+                <ZAxis range={[20, 20]} />
+                <Tooltip
+                  cursor={{ strokeDasharray: '3 3' }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload as { depth: number; hr: number };
+                    return (
+                      <TtBox>
+                        <TtRow $c="#f97316"><span>심박</span><strong>{d.hr} bpm</strong></TtRow>
+                        <TtRow $c={C.depth}><span>수심</span><strong>{d.depth.toFixed(1)} m</strong></TtRow>
+                      </TtBox>
+                    );
+                  }}
+                />
+                <Scatter data={hrScatterData} fill="#f97316" opacity={0.5} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {/* ── Feature 5: 수심-수온 산점도 (써모클라인 감지) ── */}
+        {hasTempScatter && (
+          <ChartCard title="수심-수온 분포" icon="🌡️">
+            <ChartLegend>
+              <LegDot $c="#a78bfa" /> 수심 vs 수온
+              {thermoclineDepth != null && (
+                <span style={{ marginLeft: 12, color: '#a78bfa', fontSize: 11 }}>
+                  🌊 써모클라인 ~{thermoclineDepth.toFixed(1)}m
+                </span>
+              )}
+            </ChartLegend>
+            <ResponsiveContainer width="100%" height={200}>
+              <ScatterChart margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} />
+                <XAxis
+                  dataKey="temp" type="number" name="수온"
+                  domain={[tempMin, tempMax]}
+                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+                  axisLine={{ stroke: tokens.border.subtle }}
+                  tickFormatter={(v) => `${v}°`}
+                />
+                <YAxis
+                  dataKey="depth" type="number" name="수심" reversed domain={[0, maxDepth]}
+                  tickFormatter={(v) => `${v}m`}
+                  tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44}
+                />
+                <ZAxis range={[20, 20]} />
+                <Tooltip
+                  cursor={{ strokeDasharray: '3 3' }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload as { depth: number; temp: number };
+                    return (
+                      <TtBox>
+                        <TtRow $c="#a78bfa"><span>수온</span><strong>{d.temp.toFixed(1)} °C</strong></TtRow>
+                        <TtRow $c={C.depth}><span>수심</span><strong>{d.depth.toFixed(1)} m</strong></TtRow>
+                      </TtBox>
+                    );
+                  }}
+                />
+                {thermoclineDepth != null && (
+                  <ReferenceArea
+                    y1={thermoclineDepth - 0.5} y2={thermoclineDepth + 0.5}
+                    fill="#a78bfa" fillOpacity={0.15}
+                  />
+                )}
+                <Scatter data={tempScatterData} fill="#a78bfa" opacity={0.5} />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
         {/* ── Spike & Event Log ── */}
         {(() => {
           const visibleEvents = showEvents ? diveEvents : [];

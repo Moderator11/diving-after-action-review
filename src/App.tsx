@@ -6,6 +6,7 @@ import SessionPage from './pages/SessionPage';
 import RawDataPage from './pages/RawDataPage';
 import DivePage from './pages/DivePage';
 import ComparePage from './pages/ComparePage';
+import TrendsPage from './pages/TrendsPage';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="/raw" element={<RawDataPage />} />
           <Route path="/dive/:id" element={<DivePage />} />
           <Route path="/compare" element={<ComparePage />} />
+          <Route path="/trends" element={<TrendsPage />} />
         </Routes>
       </DiveProvider>
     </BrowserRouter>

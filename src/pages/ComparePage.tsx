@@ -167,6 +167,7 @@ export default function ComparePage() {
           <Tab $active={false} onClick={() => navigate('/dive/0')}>🤿 다이브 상세</Tab>
           <Tab $active={location.pathname === '/compare'}>⚖️ 비교</Tab>
           <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
+          <Tab $active={location.pathname === '/trends'} onClick={() => navigate('/trends')}>📈 트렌드</Tab>
         </TabNav>
       </TopBar>
 

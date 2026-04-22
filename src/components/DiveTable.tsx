@@ -11,6 +11,9 @@ interface Props {
 export function DiveTable({ dives }: Props) {
   const navigate = useNavigate();
 
+  // 세션 최대 수심 (저조한 다이브 태그용)
+  const sessionMaxDepth = Math.max(...dives.map(d => d.maxDepthM));
+
   return (
     <Wrapper>
       <Header>
@@ -37,31 +40,67 @@ export function DiveTable({ dives }: Props) {
             </tr>
           </thead>
           <tbody>
-            {dives.map((dive) => (
-              <Tr key={dive.index} onClick={() => navigate(`/dive/${dive.index}`)}>
-                <Td $muted>{dive.index + 1}</Td>
-                <Td>{formatTime(dive.startTime)}</Td>
-                <Td>{formatDuration(dive.durationSeconds)}</Td>
-                <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
-                <Td $accent="cyan">{dive.maxDepthM.toFixed(1)} m</Td>
-                <Td>{dive.avgDepthM.toFixed(1)} m</Td>
-                <Td $accent="descent">
-                  {dive.maxDescentRateMps > 0
-                    ? `${dive.maxDescentRateMps.toFixed(2)} m/s`
-                    : '-'}
-                </Td>
-                <Td $accent="ascent">
-                  {dive.maxAscentRateMps > 0
-                    ? `${dive.maxAscentRateMps.toFixed(2)} m/s`
-                    : '-'}
-                </Td>
-                <Td>{dive.maxHR != null ? `${dive.maxHR} bpm` : '-'}</Td>
-                <Td>{dive.avgTempC != null ? `${dive.avgTempC} °C` : '-'}</Td>
-                <Td>
-                  <Arrow>›</Arrow>
-                </Td>
-              </Tr>
-            ))}
+            {dives.map((dive, i) => {
+              // ── 표면 인터벌 경고 계산 ──
+              let showSurfaceWarning = false;
+              let surfaceIntervalLabel = '';
+              if (i > 0) {
+                const prevDive = dives[i - 1];
+                const prevRecords = prevDive.records;
+                if (prevRecords.length > 0) {
+                  const prevExitTime = prevRecords[prevRecords.length - 1].timestamp;
+                  const intervalSeconds =
+                    (dive.startTime.getTime() - prevExitTime.getTime()) / 1000;
+                  if (intervalSeconds < dive.bottomTimeSeconds * 2) {
+                    showSurfaceWarning = true;
+                    const mins = Math.floor(intervalSeconds / 60);
+                    const secs = Math.round(intervalSeconds % 60);
+                    surfaceIntervalLabel = `표면 인터벌 주의: ${mins}m ${secs}s`;
+                  }
+                }
+              }
+
+              // ── 저조한 다이브 태그 (첫 번째 제외) ──
+              const isLowDive = i > 0 && dive.maxDepthM < sessionMaxDepth * 0.4;
+
+              return (
+                <Tr key={dive.index} onClick={() => navigate(`/dive/${dive.index}`)}>
+                  <Td $muted>
+                    <IndexCell>
+                      {dive.index + 1}
+                      {showSurfaceWarning && (
+                        <WarnBadge title={surfaceIntervalLabel}>⚠️</WarnBadge>
+                      )}
+                    </IndexCell>
+                  </Td>
+                  <Td>{formatTime(dive.startTime)}</Td>
+                  <Td>{formatDuration(dive.durationSeconds)}</Td>
+                  <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
+                  <Td $accent="cyan">
+                    <DepthCell>
+                      {dive.maxDepthM.toFixed(1)} m
+                      {isLowDive && <LowBadge>중단의심</LowBadge>}
+                    </DepthCell>
+                  </Td>
+                  <Td>{dive.avgDepthM.toFixed(1)} m</Td>
+                  <Td $accent="descent">
+                    {dive.maxDescentRateMps > 0
+                      ? `${dive.maxDescentRateMps.toFixed(2)} m/s`
+                      : '-'}
+                  </Td>
+                  <Td $accent="ascent">
+                    {dive.maxAscentRateMps > 0
+                      ? `${dive.maxAscentRateMps.toFixed(2)} m/s`
+                      : '-'}
+                  </Td>
+                  <Td>{dive.maxHR != null ? `${dive.maxHR} bpm` : '-'}</Td>
+                  <Td>{dive.avgTempC != null ? `${dive.avgTempC} °C` : '-'}</Td>
+                  <Td>
+                    <Arrow>›</Arrow>
+                  </Td>
+                </Tr>
+              );
+            })}
           </tbody>
         </Table>
       </TableWrapper>
@@ -170,4 +209,35 @@ const Arrow = styled.span`
   color: ${tokens.text.muted};
   opacity: 0.5;
   line-height: 1;
+`;
+
+const IndexCell = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+const WarnBadge = styled.span`
+  font-size: 9px;
+  border: 1px solid #f97316;
+  border-radius: 4px;
+  padding: 1px 4px;
+  cursor: help;
+  line-height: 1.4;
+`;
+
+const DepthCell = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+`;
+
+const LowBadge = styled.span`
+  font-size: 9px;
+  color: ${tokens.text.muted};
+  background: ${tokens.bg.elevated};
+  border: 1px solid ${tokens.border.default};
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 400;
 `;
