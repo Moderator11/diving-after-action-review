@@ -1,18 +1,15 @@
 import styled from 'styled-components';
-import { useNavigate, useLocation } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
 import { useRequireSession } from '../hooks/useRequireSession';
 import { MetricCard } from '../components/MetricCard';
 import { DiveProfileChart } from '../components/DiveProfileChart';
 import { DiveTable } from '../components/DiveTable';
-import { formatDuration, formatDate } from '../utils/parseFit';
-import {
-  TopBarEl, BackButton, NavSpacer, TabNav, Tab, PageEl,
-} from '../components/layout/TopBarPrimitives';
+import { formatDuration } from '../utils/parseFit';
+import { PageEl } from '../components/layout/TopBarPrimitives';
+import { TopBar } from '../components/layout/TopBar';
+import { Footer } from '../components/layout/Footer';
 
 export default function SessionPage() {
-  const navigate = useNavigate();
-  const location = useLocation();
   const session  = useRequireSession();
 
   if (!session) return null;
@@ -21,28 +18,7 @@ export default function SessionPage() {
 
   return (
     <PageEl>
-      {/* ── Top bar ── */}
-      <TopBarEl>
-        <BackButton onClick={() => navigate('/')}>
-          ← 새 파일 열기
-        </BackButton>
-        <FileInfo>
-          <FileName>{filename}</FileName>
-          <FileDate>{formatDate(stats.sessionDate)}</FileDate>
-        </FileInfo>
-        <NavSpacer />
-        <TabNav>
-          <Tab $active={location.pathname === '/session'} onClick={() => navigate('/session')}>
-            📊 세션 요약
-          </Tab>
-          <Tab $active={location.pathname === '/compare'} onClick={() => navigate('/compare')}>
-            ⚖️ 비교
-          </Tab>
-          <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>
-            🗃 Raw Data
-          </Tab>
-        </TabNav>
-      </TopBarEl>
+      <TopBar filename={filename} sessionDate={stats.sessionDate} />
 
       <Content>
         {/* ── Session header ── */}
@@ -106,33 +82,10 @@ export default function SessionPage() {
         {/* ── Dive Table ── */}
         <DiveTable dives={dives} />
       </Content>
+      <Footer />
     </PageEl>
   );
 }
-
-/* ── Styled Components ───────────────────────────────── */
-
-const FileInfo = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  overflow: hidden;
-`;
-
-const FileName = styled.span`
-  font-size: 13px;
-  font-weight: 600;
-  color: ${tokens.text.primary};
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-`;
-
-const FileDate = styled.span`
-  font-size: 11px;
-  color: ${tokens.text.muted};
-`;
 
 
 const Content = styled.main`

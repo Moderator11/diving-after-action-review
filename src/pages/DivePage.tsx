@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import styled from 'styled-components';
 import {
   ResponsiveContainer, Area, Line,
@@ -11,7 +11,7 @@ import { tokens } from '../styles/GlobalStyle';
 import { useRequireSession } from '../hooks/useRequireSession';
 import { useDiveChartData } from '../hooks/useDiveChartData';
 import { fmtTick, severityColor } from '../utils/chartUtils';
-import { formatDuration, formatDate } from '../utils/parseFit';
+import { formatDuration } from '../utils/parseFit';
 import type { AlertSeverity } from '../types/dive';
 import type { DiveSpike } from '../utils/spikes';
 
@@ -19,9 +19,9 @@ import { DiveSummaryCard } from '../components/DiveSummaryCard';
 import { SpikeEventLog }   from '../components/SpikeEventLog';
 import { VideoOverlay }    from '../components/VideoOverlay';
 import { TtBox, TtTime, TtRow } from '../components/ui/ChartTooltip';
-import {
-  TopBarEl, BackButton, NavSpacer, TabNav, Tab, PageEl,
-} from '../components/layout/TopBarPrimitives';
+import { PageEl } from '../components/layout/TopBarPrimitives';
+import { TopBar } from '../components/layout/TopBar';
+import { Footer } from '../components/layout/Footer';
 
 // ── Colour tokens ─────────────────────────────────────────
 const C = {
@@ -87,12 +87,6 @@ function ChartCard({ title, icon, children, controls }: {
       {children}
     </Card>
   );
-}
-
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString('ko-KR', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  });
 }
 
 // ── Custom tooltips ───────────────────────────────────────
@@ -204,7 +198,6 @@ function eventRefLines(
 // ── Main page ─────────────────────────────────────────────
 export default function DivePage() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { id }   = useParams<{ id: string }>();
   const session  = useRequireSession();
 
@@ -231,10 +224,9 @@ export default function DivePage() {
   if (!dive) {
     return (
       <PageEl>
-        <TopBarEl>
-          <BackButton onClick={() => navigate('/session')}>← 세션으로</BackButton>
-        </TopBarEl>
+        <TopBar />
         <Content><p style={{ color: tokens.text.muted }}>다이브를 찾을 수 없습니다.</p></Content>
+        <Footer />
       </PageEl>
     );
   }
@@ -301,21 +293,7 @@ export default function DivePage() {
 
   return (
     <PageEl>
-      {/* ── Top bar ── */}
-      <TopBarEl>
-        <BackButton onClick={() => navigate('/session')}>← 세션으로</BackButton>
-        <DiveTitle>
-          🤿 다이브 #{diveIdx + 1}
-          <DiveSub>{formatDate(dive.startTime)} · {formatTime(dive.startTime)}</DiveSub>
-        </DiveTitle>
-        <NavSpacer />
-        <TabNav>
-          <Tab $active={false} onClick={() => navigate('/session')}>📊 세션 요약</Tab>
-          <Tab $active={true}  onClick={() => {}}>🤿 다이브 상세</Tab>
-          <Tab $active={false} onClick={() => navigate('/compare')}>⚖️ 비교</Tab>
-          <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
-        </TabNav>
-      </TopBarEl>
+      <TopBar diveIdx={diveIdx} diveStartTime={dive.startTime} />
 
       <Content>
         {/* ── Dive navigation ── */}
@@ -517,25 +495,12 @@ export default function DivePage() {
           showAscent={showAscent} showEvents={showEvents}
         />
       </Content>
+      <Footer />
     </PageEl>
   );
 }
 
 /* ── Styled components ──────────────────────────────────── */
-const DiveTitle = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 15px;
-  font-weight: 700;
-  color: ${tokens.text.primary};
-`;
-
-const DiveSub = styled.span`
-  font-size: 11px;
-  font-weight: 400;
-  color: ${tokens.text.muted};
-`;
 
 const Content = styled.main`
   flex: 1;

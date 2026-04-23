@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
 import styled from 'styled-components';
 import {
   ResponsiveContainer, ComposedChart, Area, Line,
@@ -11,9 +10,9 @@ import { useRequireSession } from '../hooks/useRequireSession';
 import { fmtTick, buildDepthSeries, buildRateSeries } from '../utils/chartUtils';
 import { formatDuration, formatDate } from '../utils/parseFit';
 import { TtBox, TtTime, TtRow } from '../components/ui/ChartTooltip';
-import {
-  TopBarEl, BackButton, NavSpacer, TabNav, Tab, PageEl,
-} from '../components/layout/TopBarPrimitives';
+import { PageEl } from '../components/layout/TopBarPrimitives';
+import { TopBar } from '../components/layout/TopBar';
+import { Footer } from '../components/layout/Footer';
 import type { DetectedDive } from '../types/dive';
 
 // ── Dive colour palette ───────────────────────────────────
@@ -28,8 +27,6 @@ function diveColor(idx: number): string {
 
 // ── Main page ─────────────────────────────────────────────
 export default function ComparePage() {
-  const navigate  = useNavigate();
-  const location  = useLocation();
   const session   = useRequireSession();
 
   if (!session) return null;
@@ -110,18 +107,7 @@ export default function ComparePage() {
 
   return (
     <PageEl>
-      {/* ── Top bar ── */}
-      <TopBarEl>
-        <BackButton onClick={() => navigate('/session')}>← 세션으로</BackButton>
-        <PageTitle>⚖️ 다이브 비교</PageTitle>
-        <NavSpacer />
-        <TabNav>
-          <Tab $active={false} onClick={() => navigate('/session')}>📊 세션 요약</Tab>
-          <Tab $active={false} onClick={() => navigate('/dive/0')}>🤿 다이브 상세</Tab>
-          <Tab $active={location.pathname === '/compare'}>⚖️ 비교</Tab>
-          <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
-        </TabNav>
-      </TopBarEl>
+      <TopBar />
 
       <Layout>
         {/* ── Sidebar ── */}
@@ -429,14 +415,12 @@ export default function ComparePage() {
           )}
         </Charts>
       </Layout>
+      <Footer />
     </PageEl>
   );
 }
 
 /* ── Styled components ──────────────────────────────────── */
-const PageTitle = styled.h1`
-  font-size: 15px; font-weight: 700; color: ${tokens.text.primary};
-`;
 
 const Layout = styled.div`
   display: flex; flex: 1; gap: 24px;

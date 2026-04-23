@@ -1,9 +1,10 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import styled from 'styled-components';
-import { useNavigate } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
 import { useRequireSession } from '../hooks/useRequireSession';
 import type { FitMessageGroup } from '../types/dive';
+import { TopBar } from '../components/layout/TopBar';
+import { Footer } from '../components/layout/Footer';
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
 type SortDir = 'asc' | 'desc' | null;
@@ -54,7 +55,6 @@ function unitHint(key: string): string {
 }
 
 export default function RawDataPage() {
-  const navigate = useNavigate();
   const session  = useRequireSession();
 
   const [selectedKey, setSelectedKey] = useState<string>('');
@@ -168,15 +168,7 @@ export default function RawDataPage() {
 
   return (
     <Page>
-      <TopBar>
-        <BackBtn onClick={() => navigate('/session')}>← 세션 요약</BackBtn>
-        <Title>Raw Data Explorer</Title>
-        <FilePill>{filename}</FilePill>
-        <Spacer />
-        {group && (
-          <ExportBtn onClick={exportCSV}>↓ CSV</ExportBtn>
-        )}
-      </TopBar>
+      <TopBar filename={filename} onExportCSV={exportCSV} canExport={!!group} />
 
       <Body>
         {/* ── Sidebar ── */}
@@ -307,6 +299,7 @@ export default function RawDataPage() {
           )}
         </Main>
       </Body>
+      <Footer />
     </Page>
   );
 }
@@ -400,64 +393,6 @@ const Page = styled.div`
   flex-direction: column;
   background: ${tokens.bg.base};
   overflow: hidden;
-`;
-
-const TopBar = styled.header`
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 20px;
-  background: ${tokens.bg.base}ee;
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid ${tokens.border.subtle};
-  flex-shrink: 0;
-`;
-
-const BackBtn = styled.button`
-  font-size: 12px;
-  color: ${tokens.text.secondary};
-  background: ${tokens.bg.surface};
-  border: 1px solid ${tokens.border.subtle};
-  border-radius: ${tokens.radius.md};
-  padding: 5px 12px;
-  white-space: nowrap;
-  transition: all 0.2s;
-  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
-`;
-
-const Title = styled.span`
-  font-size: 14px;
-  font-weight: 700;
-  color: ${tokens.text.primary};
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-`;
-
-const FilePill = styled.span`
-  font-size: 11px;
-  color: ${tokens.text.muted};
-  background: ${tokens.bg.elevated};
-  border: 1px solid ${tokens.border.subtle};
-  padding: 3px 10px;
-  border-radius: 99px;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-`;
-
-const Spacer = styled.div`flex: 1;`;
-
-const ExportBtn = styled.button`
-  font-size: 12px; font-weight: 600;
-  color: ${tokens.accent.cyan};
-  background: ${tokens.accent.cyan}18;
-  border: 1px solid ${tokens.accent.cyan}44;
-  border-radius: ${tokens.radius.md};
-  padding: 5px 14px;
-  white-space: nowrap;
-  transition: all 0.2s;
-  &:hover { background: ${tokens.accent.cyan}28; }
 `;
 
 const Body = styled.div`
