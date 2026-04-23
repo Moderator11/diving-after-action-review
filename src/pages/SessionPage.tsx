@@ -1,31 +1,28 @@
-import { useEffect } from 'react';
 import styled from 'styled-components';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
-import { useDiveSession } from '../store/DiveContext';
+import { useRequireSession } from '../hooks/useRequireSession';
 import { MetricCard } from '../components/MetricCard';
 import { DiveProfileChart } from '../components/DiveProfileChart';
 import { DiveTable } from '../components/DiveTable';
 import { formatDuration, formatDate } from '../utils/parseFit';
+import {
+  TopBarEl, BackButton, NavSpacer, TabNav, Tab, PageEl,
+} from '../components/layout/TopBarPrimitives';
 
 export default function SessionPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { session } = useDiveSession();
-
-  // Redirect if no data loaded
-  useEffect(() => {
-    if (!session) navigate('/');
-  }, [session, navigate]);
+  const session  = useRequireSession();
 
   if (!session) return null;
 
-  const { stats, records, laps: _laps, dives, filename } = session;
+  const { stats, records, dives, filename } = session;
 
   return (
-    <Page>
+    <PageEl>
       {/* ── Top bar ── */}
-      <TopBar>
+      <TopBarEl>
         <BackButton onClick={() => navigate('/')}>
           ← 새 파일 열기
         </BackButton>
@@ -33,7 +30,7 @@ export default function SessionPage() {
           <FileName>{filename}</FileName>
           <FileDate>{formatDate(stats.sessionDate)}</FileDate>
         </FileInfo>
-        <Spacer />
+        <NavSpacer />
         <TabNav>
           <Tab $active={location.pathname === '/session'} onClick={() => navigate('/session')}>
             📊 세션 요약
@@ -45,7 +42,7 @@ export default function SessionPage() {
             🗃 Raw Data
           </Tab>
         </TabNav>
-      </TopBar>
+      </TopBarEl>
 
       <Content>
         {/* ── Session header ── */}
@@ -109,46 +106,11 @@ export default function SessionPage() {
         {/* ── Dive Table ── */}
         <DiveTable dives={dives} />
       </Content>
-    </Page>
+    </PageEl>
   );
 }
 
 /* ── Styled Components ───────────────────────────────── */
-const Page = styled.div`
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: ${tokens.bg.base};
-`;
-
-const TopBar = styled.header`
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 32px;
-  background: ${tokens.bg.base}ee;
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid ${tokens.border.subtle};
-`;
-
-const BackButton = styled.button`
-  font-size: 13px;
-  color: ${tokens.text.secondary};
-  background: ${tokens.bg.surface};
-  border: 1px solid ${tokens.border.subtle};
-  border-radius: ${tokens.radius.md};
-  padding: 7px 14px;
-  transition: all 0.2s;
-  white-space: nowrap;
-
-  &:hover {
-    border-color: ${tokens.accent.cyan};
-    color: ${tokens.accent.cyan};
-  }
-`;
 
 const FileInfo = styled.div`
   display: flex;
@@ -172,32 +134,6 @@ const FileDate = styled.span`
   color: ${tokens.text.muted};
 `;
 
-const Spacer = styled.div`
-  flex: 1;
-`;
-
-const TabNav = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: ${tokens.bg.elevated};
-  border: 1px solid ${tokens.border.subtle};
-  border-radius: ${tokens.radius.md};
-  padding: 3px;
-`;
-
-const Tab = styled.button<{ $active: boolean }>`
-  font-size: 12px;
-  font-weight: ${({ $active }) => ($active ? '600' : '400')};
-  padding: 5px 14px;
-  border-radius: 7px;
-  color: ${({ $active }) => ($active ? tokens.text.primary : tokens.text.muted)};
-  background: ${({ $active }) => ($active ? tokens.bg.surface : 'transparent')};
-  border: ${({ $active }) => ($active ? `1px solid ${tokens.border.default}` : '1px solid transparent')};
-  transition: all 0.15s;
-  white-space: nowrap;
-  &:hover { color: ${tokens.text.primary}; }
-`;
 
 const Content = styled.main`
   flex: 1;

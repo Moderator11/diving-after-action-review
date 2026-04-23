@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import styled from 'styled-components';
 import { useNavigate } from 'react-router-dom';
 import { tokens } from '../styles/GlobalStyle';
-import { useDiveSession } from '../store/DiveContext';
+import { useRequireSession } from '../hooks/useRequireSession';
 import type { FitMessageGroup } from '../types/dive';
 
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
@@ -55,7 +55,7 @@ function unitHint(key: string): string {
 
 export default function RawDataPage() {
   const navigate = useNavigate();
-  const { session } = useDiveSession();
+  const session  = useRequireSession();
 
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [search, setSearch] = useState('');
@@ -64,10 +64,6 @@ export default function RawDataPage() {
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>(null);
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!session) navigate('/');
-  }, [session, navigate]);
 
   if (!session) return null;
 
@@ -778,23 +774,27 @@ const PagRow = styled.div`
 const PageBtn = styled.button<{ disabled?: boolean }>`
   width: 26px; height: 26px;
   border-radius: 5px; font-size: 12px;
-  border: 1px solid ${tokens.border.subtle};
-  color: ${({ disabled }) => disabled ? tokens.text.muted : tokens.text.secondary};
+  border: 1px solid ${({ disabled }) => disabled ? tokens.border.subtle : tokens.border.default};
   background: ${tokens.bg.elevated};
-  opacity: ${({ disabled }) => disabled ? 0.4 : 1};
+  color: ${({ disabled }) => disabled ? tokens.text.muted : tokens.text.secondary};
   cursor: ${({ disabled }) => disabled ? 'not-allowed' : 'pointer'};
-  transition: all 0.12s;
-  &:not(:disabled):hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
+  opacity: ${({ disabled }) => disabled ? 0.4 : 1};
+  transition: all 0.15s;
+  &:hover:not(:disabled) { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
 `;
 
 const PageInfo = styled.span`
-  font-size: 11px; color: ${tokens.text.secondary};
-  padding: 0 5px; min-width: 56px; text-align: center;
+  font-size: 11px;
+  color: ${tokens.text.muted};
+  padding: 0 6px;
+  min-width: 50px;
+  text-align: center;
 `;
 
 const BottomPagination = styled.div`
-  display: flex; justify-content: center;
-  padding: 12px 16px;
+  padding: 8px 16px;
+  display: flex;
+  justify-content: flex-end;
   border-top: 1px solid ${tokens.border.subtle};
   flex-shrink: 0;
 `;

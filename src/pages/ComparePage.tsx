@@ -1,84 +1,41 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import styled from 'styled-components';
 import {
-  ResponsiveContainer,
-  ComposedChart,
-  Area,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ReferenceLine,
+  ResponsiveContainer, ComposedChart, Area, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
+
 import { tokens } from '../styles/GlobalStyle';
-import { useDiveSession } from '../store/DiveContext';
+import { useRequireSession } from '../hooks/useRequireSession';
+import { fmtTick, buildDepthSeries, buildRateSeries } from '../utils/chartUtils';
 import { formatDuration, formatDate } from '../utils/parseFit';
+import { TtBox, TtTime, TtRow } from '../components/ui/ChartTooltip';
+import {
+  TopBarEl, BackButton, NavSpacer, TabNav, Tab, PageEl,
+} from '../components/layout/TopBarPrimitives';
 import type { DetectedDive } from '../types/dive';
 
-// ── Dive palette ──────────────────────────────────────────
+// ── Dive colour palette ───────────────────────────────────
 const PALETTE = [
-  '#06b6d4', // cyan
-  '#f97316', // orange
-  '#8b5cf6', // violet
-  '#10b981', // emerald
-  '#f43f5e', // rose
-  '#f59e0b', // amber
-  '#3b82f6', // blue
-  '#ec4899', // pink
+  '#06b6d4', '#f97316', '#8b5cf6', '#10b981',
+  '#f43f5e', '#f59e0b', '#3b82f6', '#ec4899',
 ] as const;
 
 function diveColor(idx: number): string {
   return PALETTE[idx % PALETTE.length];
 }
 
-// ── Data helpers ──────────────────────────────────────────
-function fmtTick(v: number): string {
-  const m = Math.floor(v / 60);
-  const s = Math.floor(v % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function buildDepthSeries(dive: DetectedDive) {
-  const t0 = dive.startTime.getTime();
-  return dive.records.map((r) => ({
-    t:     Math.round((r.timestamp.getTime() - t0) / 1000),
-    depth: parseFloat(r.depthM.toFixed(2)),
-    hr:    r.heartRate,
-  }));
-}
-
-function buildRateSeries(dive: DetectedDive) {
-  const t0   = dive.startTime.getTime();
-  const recs = dive.records;
-  return recs.map((r, i) => {
-    const t = Math.round((r.timestamp.getTime() - t0) / 1000);
-    if (i === 0) return { t, desc: 0, asc: 0 };
-    const prev  = recs[i - 1];
-    const dt    = (r.timestamp.getTime() - prev.timestamp.getTime()) / 1000;
-    const rate  = dt > 0 ? (r.depthM - prev.depthM) / dt : 0;
-    return {
-      t,
-      desc: rate >  0.02 ? parseFloat(rate.toFixed(2)) : 0,
-      asc:  rate < -0.02 ? parseFloat(Math.abs(rate).toFixed(2)) : 0,
-    };
-  });
-}
-
-
 // ── Main page ─────────────────────────────────────────────
 export default function ComparePage() {
   const navigate  = useNavigate();
   const location  = useLocation();
-  const { session } = useDiveSession();
+  const session   = useRequireSession();
 
-  useEffect(() => { if (!session) navigate('/'); }, [session, navigate]);
   if (!session) return null;
 
   const { dives } = session;
 
-  // Selected dive indices
   const [selected, setSelected] = useState<Set<number>>(
     new Set(dives.length >= 2 ? [0, 1] : dives.length === 1 ? [0] : []),
   );
@@ -86,43 +43,34 @@ export default function ComparePage() {
   const toggle = (idx: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
       return next;
     });
   };
 
   const selectedArr = [...selected].sort((a, b) => a - b);
 
-  // ── Build merged chart series ─────────────────────────
-  // Each selected dive produces its own keyed series.
-  // We merge into a single array indexed by "t" using a Map.
+  // ── Merged depth/HR series ────────────────────────────
   const depthChartData = useMemo(() => {
     if (selectedArr.length === 0) return [];
     const map = new Map<number, Record<string, number | null>>();
-
     selectedArr.forEach((diveIdx) => {
-      const dive = dives[diveIdx];
-      const series = buildDepthSeries(dive);
-      series.forEach(({ t, depth, hr }) => {
+      buildDepthSeries(dives[diveIdx]).forEach(({ t, depth, hr }) => {
         if (!map.has(t)) map.set(t, { t });
         const row = map.get(t)!;
         row[`depth_${diveIdx}`] = depth;
         if (hr != null) row[`hr_${diveIdx}`] = hr;
       });
     });
-
-    return [...map.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([, v]) => v);
+    return [...map.entries()].sort(([a], [b]) => a - b).map(([, v]) => v);
   }, [selectedArr, dives]);
 
-  // ── Rate chart data ───────────────────────────────────
+  // ── Merged rate series ────────────────────────────────
   const rateChartData = useMemo(() => {
     if (selectedArr.length === 0) return [];
     const map = new Map<number, Record<string, number | null>>();
     selectedArr.forEach((diveIdx) => {
-      const series = buildRateSeries(dives[diveIdx]);
-      series.forEach(({ t, desc, asc }) => {
+      buildRateSeries(dives[diveIdx]).forEach(({ t, desc, asc }) => {
         if (!map.has(t)) map.set(t, { t });
         const row = map.get(t)!;
         row[`desc_${diveIdx}`] = desc;
@@ -141,44 +89,49 @@ export default function ComparePage() {
     return parseFloat((Math.ceil(m * 10) / 10 + 0.1).toFixed(1));
   }, [selectedArr, dives]);
 
-  // Max depth across all selected dives
   const maxDepth = useMemo(() => {
-    const m = Math.max(
-      ...selectedArr.map((i) => dives[i].maxDepthM),
-      5,
-    );
+    const m = Math.max(...selectedArr.map((i) => dives[i].maxDepthM), 5);
     return Math.ceil(m + 1);
   }, [selectedArr, dives]);
 
-  // Whether any selected dive has HR data
   const hasHR = selectedArr.some((i) =>
     dives[i].records.some((r) => r.heartRate != null),
   );
 
+  // ── Shared chart axes ─────────────────────────────────
+  const sharedXAxis = (
+    <XAxis
+      dataKey="t" type="number" domain={['dataMin', 'dataMax']}
+      tickFormatter={fmtTick}
+      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
+      axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
+    />
+  );
+
   return (
-    <Page>
+    <PageEl>
       {/* ── Top bar ── */}
-      <TopBar>
+      <TopBarEl>
         <BackButton onClick={() => navigate('/session')}>← 세션으로</BackButton>
         <PageTitle>⚖️ 다이브 비교</PageTitle>
-        <Spacer />
+        <NavSpacer />
         <TabNav>
           <Tab $active={false} onClick={() => navigate('/session')}>📊 세션 요약</Tab>
           <Tab $active={false} onClick={() => navigate('/dive/0')}>🤿 다이브 상세</Tab>
           <Tab $active={location.pathname === '/compare'}>⚖️ 비교</Tab>
           <Tab $active={location.pathname === '/raw'} onClick={() => navigate('/raw')}>🗃 Raw Data</Tab>
         </TabNav>
-      </TopBar>
+      </TopBarEl>
 
       <Layout>
-        {/* ── Sidebar: dive selector ── */}
+        {/* ── Sidebar ── */}
         <Sidebar>
           <SidebarTitle>다이브 선택</SidebarTitle>
           <SidebarNote>최대 {PALETTE.length}개 동시 비교</SidebarNote>
           <DiveList>
             {dives.map((dive, idx) => {
               const isSelected = selected.has(idx);
-              const color = diveColor(selectedArr.indexOf(idx));
+              const color      = diveColor(selectedArr.indexOf(idx));
               return (
                 <DiveItem
                   key={idx}
@@ -203,7 +156,7 @@ export default function ComparePage() {
             })}
           </DiveList>
 
-          {/* ── Quick compare stats table ── */}
+          {/* ── Stats table ── */}
           {selectedArr.length >= 2 && (
             <StatsTable>
               <SidebarTitle style={{ marginTop: 24 }}>수치 비교</SidebarTitle>
@@ -219,21 +172,21 @@ export default function ComparePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { label: '최대 수심', fmt: (d: DetectedDive) => `${d.maxDepthM.toFixed(1)}m` },
-                    { label: '총 시간',   fmt: (d: DetectedDive) => formatDuration(d.durationSeconds) },
-                    { label: '잠수 시간', fmt: (d: DetectedDive) => formatDuration(d.bottomTimeSeconds) },
-                    { label: '평균 심박', fmt: (d: DetectedDive) => d.avgHR != null ? `${d.avgHR}bpm` : '-' },
-                    { label: '최고 심박', fmt: (d: DetectedDive) => d.maxHR != null ? `${d.maxHR}bpm` : '-' },
-                    { label: '최대 하강', fmt: (d: DetectedDive) => `${d.maxDescentRateMps.toFixed(2)}m/s` },
-                    { label: '최대 상승', fmt: (d: DetectedDive) => `${d.maxAscentRateMps.toFixed(2)}m/s` },
-                    { label: '수온',      fmt: (d: DetectedDive) => d.avgTempC != null ? `${d.avgTempC}°C` : '-' },
-                  ].map(({ label, fmt }) => (
+                  {(
+                    [
+                      { label: '최대 수심', fmt: (d: DetectedDive) => `${d.maxDepthM.toFixed(1)}m` },
+                      { label: '총 시간',   fmt: (d: DetectedDive) => formatDuration(d.durationSeconds) },
+                      { label: '잠수 시간', fmt: (d: DetectedDive) => formatDuration(d.bottomTimeSeconds) },
+                      { label: '평균 심박', fmt: (d: DetectedDive) => d.avgHR != null ? `${d.avgHR}bpm` : '-' },
+                      { label: '최고 심박', fmt: (d: DetectedDive) => d.maxHR != null ? `${d.maxHR}bpm` : '-' },
+                      { label: '최대 하강', fmt: (d: DetectedDive) => `${d.maxDescentRateMps.toFixed(2)}m/s` },
+                      { label: '최대 상승', fmt: (d: DetectedDive) => `${d.maxAscentRateMps.toFixed(2)}m/s` },
+                      { label: '수온',      fmt: (d: DetectedDive) => d.avgTempC != null ? `${d.avgTempC}°C` : '-' },
+                    ] as const
+                  ).map(({ label, fmt }) => (
                     <tr key={label}>
                       <Td>{label}</Td>
-                      {selectedArr.map((i) => (
-                        <Td key={i}>{fmt(dives[i])}</Td>
-                      ))}
+                      {selectedArr.map((i) => <Td key={i}>{fmt(dives[i])}</Td>)}
                     </tr>
                   ))}
                 </tbody>
@@ -253,7 +206,7 @@ export default function ComparePage() {
 
           {selectedArr.length > 0 && (
             <>
-              {/* ── Legend ── */}
+              {/* Legend */}
               <LegendRow>
                 {selectedArr.map((i) => (
                   <LegendItem key={i}>
@@ -264,7 +217,7 @@ export default function ComparePage() {
                 ))}
               </LegendRow>
 
-              {/* ── Depth comparison chart ── */}
+              {/* ── Depth chart ── */}
               <ChartCard>
                 <ChartCardHeader>
                   <ChartCardIcon>📈</ChartCardIcon>
@@ -282,58 +235,40 @@ export default function ComparePage() {
                       ))}
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-                    <XAxis
-                      dataKey="t" type="number" domain={['dataMin', 'dataMax']}
-                      tickFormatter={fmtTick}
-                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                      axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      reversed domain={[0, maxDepth]}
-                      tickFormatter={(v) => `${v}m`}
-                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44}
-                    />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (!active || !payload?.length) return null;
-                        return (
-                          <TtBox>
-                            <TtTime>{fmtTick(Number(label))}</TtTime>
-                            {selectedArr.map((i, ci) => {
-                              const p = payload.find((x: any) => x.dataKey === `depth_${i}`);
-                              if (!p || p.value == null) return null;
-                              return (
-                                <TtRow key={i} $c={diveColor(ci)}>
-                                  <span>다이브 #{i + 1}</span>
-                                  <strong>{Number(p.value).toFixed(1)} m</strong>
-                                </TtRow>
-                              );
-                            })}
-                          </TtBox>
-                        );
-                      }}
-                    />
+                    {sharedXAxis}
+                    <YAxis reversed domain={[0, maxDepth]} tickFormatter={(v) => `${v}m`}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={44} />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      return (
+                        <TtBox>
+                          <TtTime>{fmtTick(Number(label))}</TtTime>
+                          {selectedArr.map((i, ci) => {
+                            const p = payload.find((x: any) => x.dataKey === `depth_${i}`);
+                            if (!p || p.value == null) return null;
+                            return (
+                              <TtRow key={i} $c={diveColor(ci)}>
+                                <span>다이브 #{i + 1}</span>
+                                <strong>{Number(p.value).toFixed(1)} m</strong>
+                              </TtRow>
+                            );
+                          })}
+                        </TtBox>
+                      );
+                    }} />
                     <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
                     {selectedArr.map((diveIdx, ci) => (
-                      <Area
-                        key={diveIdx}
-                        dataKey={`depth_${diveIdx}`}
-                        name={`다이브 #${diveIdx + 1}`}
-                        type="monotone"
-                        stroke={diveColor(ci)}
-                        strokeWidth={2}
-                        fill={`url(#dg_${diveIdx})`}
-                        dot={false}
-                        connectNulls
-                        isAnimationActive={false}
-                        activeDot={{ r: 4, fill: diveColor(ci) }}
-                      />
+                      <Area key={diveIdx} dataKey={`depth_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1}`} type="monotone"
+                        stroke={diveColor(ci)} strokeWidth={2} fill={`url(#dg_${diveIdx})`}
+                        dot={false} connectNulls isAnimationActive={false}
+                        activeDot={{ r: 4, fill: diveColor(ci) }} />
                     ))}
                   </ComposedChart>
                 </ResponsiveContainer>
               </ChartCard>
 
-              {/* ── Rate comparison chart ── */}
+              {/* ── Rate chart ── */}
               <ChartCard>
                 <ChartCardHeader>
                   <ChartCardIcon>🚀</ChartCardIcon>
@@ -351,82 +286,55 @@ export default function ComparePage() {
                       ))}
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-                    <XAxis
-                      dataKey="t" type="number" domain={['dataMin', 'dataMax']}
-                      tickFormatter={fmtTick}
-                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                      axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      domain={[0, maxRate]}
-                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36}
-                    />
-                    <Tooltip
-                      content={({ active, payload, label }) => {
-                        if (!active || !payload?.length) return null;
-                        return (
-                          <TtBox>
-                            <TtTime>{fmtTick(Number(label))}</TtTime>
-                            {selectedArr.map((i, ci) => {
-                              const d = payload.find((x: any) => x.dataKey === `desc_${i}`);
-                              const a = payload.find((x: any) => x.dataKey === `asc_${i}`);
-                              const dv = d?.value as number | undefined;
-                              const av = a?.value as number | undefined;
-                              if ((!dv || dv === 0) && (!av || av === 0)) return null;
-                              return (
-                                <TtRow key={i} $c={diveColor(ci)}>
-                                  <span>#{i + 1}</span>
-                                  <strong>
-                                    {dv && dv > 0 ? `↓${dv.toFixed(2)}` : ''}
-                                    {av && av > 0 ? `↑${av.toFixed(2)}` : ''}
-                                    {' '}m/s
-                                  </strong>
-                                </TtRow>
-                              );
-                            })}
-                          </TtBox>
-                        );
-                      }}
-                    />
+                    {sharedXAxis}
+                    <YAxis domain={[0, maxRate]}
+                      tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      return (
+                        <TtBox>
+                          <TtTime>{fmtTick(Number(label))}</TtTime>
+                          {selectedArr.map((i, ci) => {
+                            const d  = payload.find((x: any) => x.dataKey === `desc_${i}`);
+                            const a  = payload.find((x: any) => x.dataKey === `asc_${i}`);
+                            const dv = d?.value as number | undefined;
+                            const av = a?.value as number | undefined;
+                            if ((!dv || dv === 0) && (!av || av === 0)) return null;
+                            return (
+                              <TtRow key={i} $c={diveColor(ci)}>
+                                <span>#{i + 1}</span>
+                                <strong>
+                                  {dv && dv > 0 ? `↓${dv.toFixed(2)}` : ''}
+                                  {av && av > 0 ? `↑${av.toFixed(2)}` : ''}
+                                  {' '}m/s
+                                </strong>
+                              </TtRow>
+                            );
+                          })}
+                        </TtBox>
+                      );
+                    }} />
                     <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
-                    {/* Descent: solid area per dive */}
                     {selectedArr.map((diveIdx, ci) => (
-                      <Area
-                        key={`desc-${diveIdx}`}
-                        dataKey={`desc_${diveIdx}`}
-                        name={`다이브 #${diveIdx + 1} 하강`}
-                        type="monotone"
-                        stroke={diveColor(ci)}
-                        strokeWidth={1.8}
-                        fill={`url(#rg_${diveIdx})`}
-                        dot={false}
-                        connectNulls
-                        isAnimationActive={false}
-                        activeDot={{ r: 3, fill: diveColor(ci) }}
-                      />
+                      <Area key={`desc-${diveIdx}`} dataKey={`desc_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1} 하강`} type="monotone"
+                        stroke={diveColor(ci)} strokeWidth={1.8} fill={`url(#rg_${diveIdx})`}
+                        dot={false} connectNulls isAnimationActive={false}
+                        activeDot={{ r: 3, fill: diveColor(ci) }} />
                     ))}
-                    {/* Ascent: dashed line per dive */}
                     {selectedArr.map((diveIdx, ci) => (
-                      <Line
-                        key={`asc-${diveIdx}`}
-                        dataKey={`asc_${diveIdx}`}
-                        name={`다이브 #${diveIdx + 1} 상승`}
-                        type="monotone"
-                        stroke={diveColor(ci)}
-                        strokeWidth={1.5}
-                        strokeDasharray="5 3"
-                        dot={false}
-                        connectNulls
-                        isAnimationActive={false}
-                        activeDot={{ r: 3, fill: diveColor(ci) }}
-                      />
+                      <Line key={`asc-${diveIdx}`} dataKey={`asc_${diveIdx}`}
+                        name={`다이브 #${diveIdx + 1} 상승`} type="monotone"
+                        stroke={diveColor(ci)} strokeWidth={1.5} strokeDasharray="5 3"
+                        dot={false} connectNulls isAnimationActive={false}
+                        activeDot={{ r: 3, fill: diveColor(ci) }} />
                     ))}
                   </ComposedChart>
                 </ResponsiveContainer>
                 <AxisLabel>m / s</AxisLabel>
               </ChartCard>
 
-              {/* ── HR comparison chart ── */}
+              {/* ── HR chart ── */}
               {hasHR && (
                 <ChartCard>
                   <ChartCardHeader>
@@ -445,51 +353,34 @@ export default function ComparePage() {
                         ))}
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke={tokens.chart.grid} vertical={false} />
-                      <XAxis
-                        dataKey="t" type="number" domain={['dataMin', 'dataMax']}
-                        tickFormatter={fmtTick}
-                        tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false}
-                        axisLine={{ stroke: tokens.border.subtle }} interval="preserveStartEnd"
-                      />
-                      <YAxis
-                        domain={[40, 200]}
-                        tickFormatter={(v) => `${v}`}
-                        tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36}
-                      />
-                      <Tooltip
-                        content={({ active, payload, label }) => {
-                          if (!active || !payload?.length) return null;
-                          return (
-                            <TtBox>
-                              <TtTime>{fmtTick(Number(label))}</TtTime>
-                              {selectedArr.map((i, ci) => {
-                                const p = payload.find((x: any) => x.dataKey === `hr_${i}`);
-                                if (!p || p.value == null) return null;
-                                return (
-                                  <TtRow key={i} $c={diveColor(ci)}>
-                                    <span>다이브 #{i + 1}</span>
-                                    <strong>{p.value} bpm</strong>
-                                  </TtRow>
-                                );
-                              })}
-                            </TtBox>
-                          );
-                        }}
-                      />
+                      {sharedXAxis}
+                      <YAxis domain={[40, 200]}
+                        tick={{ fill: tokens.text.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={36} />
+                      <Tooltip content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        return (
+                          <TtBox>
+                            <TtTime>{fmtTick(Number(label))}</TtTime>
+                            {selectedArr.map((i, ci) => {
+                              const p = payload.find((x: any) => x.dataKey === `hr_${i}`);
+                              if (!p || p.value == null) return null;
+                              return (
+                                <TtRow key={i} $c={diveColor(ci)}>
+                                  <span>다이브 #{i + 1}</span>
+                                  <strong>{p.value} bpm</strong>
+                                </TtRow>
+                              );
+                            })}
+                          </TtBox>
+                        );
+                      }} />
                       <ReferenceLine x={0} stroke={tokens.border.subtle} strokeDasharray="4 3" />
                       {selectedArr.map((diveIdx, ci) => (
-                        <Line
-                          key={diveIdx}
-                          dataKey={`hr_${diveIdx}`}
-                          name={`다이브 #${diveIdx + 1} bpm`}
-                          type="monotone"
-                          stroke={diveColor(ci)}
-                          strokeWidth={1.5}
-                          dot={false}
-                          connectNulls
-                          isAnimationActive={false}
-                          activeDot={{ r: 3, fill: diveColor(ci) }}
-                        />
+                        <Line key={diveIdx} dataKey={`hr_${diveIdx}`}
+                          name={`다이브 #${diveIdx + 1} bpm`} type="monotone"
+                          stroke={diveColor(ci)} strokeWidth={1.5}
+                          dot={false} connectNulls isAnimationActive={false}
+                          activeDot={{ r: 3, fill: diveColor(ci) }} />
                       ))}
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -497,7 +388,7 @@ export default function ComparePage() {
                 </ChartCard>
               )}
 
-              {/* ── Duration bar comparison ── */}
+              {/* ── Metric bars ── */}
               <ChartCard>
                 <ChartCardHeader>
                   <ChartCardIcon>📊</ChartCardIcon>
@@ -506,9 +397,9 @@ export default function ComparePage() {
                 <MetricBars>
                   {(
                     [
-                      { label: '최대 수심 (m)',  key: 'maxDepthM',          fmt: (v: number) => `${v.toFixed(1)}m`,   max: Math.max(...selectedArr.map((i) => dives[i].maxDepthM)) },
-                      { label: '잠수 시간 (분)',  key: 'bottomTimeSeconds',  fmt: (v: number) => formatDuration(v),   max: Math.max(...selectedArr.map((i) => dives[i].bottomTimeSeconds)) },
-                      { label: '평균 심박 (bpm)', key: 'avgHR',             fmt: (v: number | null) => v != null ? `${v}bpm` : '-', max: Math.max(...selectedArr.map((i) => dives[i].avgHR ?? 0)) },
+                      { label: '최대 수심 (m)',  key: 'maxDepthM',         fmt: (v: number) => `${v.toFixed(1)}m`,  max: Math.max(...selectedArr.map((i) => dives[i].maxDepthM)) },
+                      { label: '잠수 시간 (분)',  key: 'bottomTimeSeconds', fmt: (v: number) => formatDuration(v),   max: Math.max(...selectedArr.map((i) => dives[i].bottomTimeSeconds)) },
+                      { label: '평균 심박 (bpm)', key: 'avgHR',            fmt: (v: number | null) => v != null ? `${v}bpm` : '-', max: Math.max(...selectedArr.map((i) => dives[i].avgHR ?? 0)) },
                     ] as const
                   ).map(({ label, key, fmt, max }) => (
                     <MetricBarRow key={key}>
@@ -538,63 +429,19 @@ export default function ComparePage() {
           )}
         </Charts>
       </Layout>
-    </Page>
+    </PageEl>
   );
 }
 
 /* ── Styled components ──────────────────────────────────── */
-const Page = styled.div`
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: ${tokens.bg.base};
-`;
-
-const TopBar = styled.header`
-  position: sticky; top: 0; z-index: 10;
-  display: flex; align-items: center; gap: 16px;
-  padding: 14px 32px;
-  background: ${tokens.bg.base}ee;
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid ${tokens.border.subtle};
-`;
-
-const BackButton = styled.button`
-  font-size: 13px; color: ${tokens.text.secondary};
-  background: ${tokens.bg.surface}; border: 1px solid ${tokens.border.subtle};
-  border-radius: ${tokens.radius.md}; padding: 7px 14px; white-space: nowrap;
-  transition: all 0.2s;
-  &:hover { border-color: ${tokens.accent.cyan}; color: ${tokens.accent.cyan}; }
-`;
-
 const PageTitle = styled.h1`
   font-size: 15px; font-weight: 700; color: ${tokens.text.primary};
 `;
 
-const Spacer = styled.div` flex: 1; `;
-
-const TabNav = styled.div`
-  display: flex; align-items: center; gap: 4px;
-  background: ${tokens.bg.elevated}; border: 1px solid ${tokens.border.subtle};
-  border-radius: ${tokens.radius.md}; padding: 3px;
-`;
-
-const Tab = styled.button<{ $active: boolean }>`
-  font-size: 12px;
-  font-weight: ${({ $active }) => ($active ? '600' : '400')};
-  padding: 5px 14px; border-radius: 7px;
-  color: ${({ $active }) => ($active ? tokens.text.primary : tokens.text.muted)};
-  background: ${({ $active }) => ($active ? tokens.bg.surface : 'transparent')};
-  border: ${({ $active }) => ($active ? `1px solid ${tokens.border.default}` : '1px solid transparent')};
-  transition: all 0.15s; white-space: nowrap;
-  &:hover { color: ${tokens.text.primary}; }
-`;
-
 const Layout = styled.div`
-  display: flex; flex: 1; gap: 0;
+  display: flex; flex: 1; gap: 24px;
   max-width: 1400px; width: 100%; margin: 0 auto;
   padding: 28px 24px 60px;
-  gap: 24px;
   @media (max-width: 900px) { flex-direction: column; }
 `;
 
@@ -631,9 +478,7 @@ const DiveItemColor = styled.div<{ $c: string }>`
   background: ${({ $c }) => $c}; flex-shrink: 0;
 `;
 
-const DiveItemInfo = styled.div`
-  flex: 1; overflow: hidden;
-`;
+const DiveItemInfo = styled.div` flex: 1; overflow: hidden; `;
 
 const DiveItemTitle = styled.div`
   font-size: 13px; font-weight: 600; color: ${tokens.text.primary};
@@ -652,9 +497,7 @@ const DiveCheck = styled.div<{ $selected: boolean; $c: string }>`
   flex-shrink: 0; transition: all 0.15s;
 `;
 
-const StatsTable = styled.div`
-  margin-top: 4px;
-`;
+const StatsTable = styled.div` margin-top: 4px; `;
 
 const Th = styled.th`
   font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
@@ -728,22 +571,6 @@ const AxisLabel = styled.div`
   margin-top: 4px; padding-right: 4px; opacity: 0.6; letter-spacing: 0.04em;
 `;
 
-const TtBox = styled.div`
-  background: ${tokens.bg.elevated}; border: 1px solid ${tokens.border.default};
-  border-radius: ${tokens.radius.md}; padding: 10px 14px;
-  font-size: 12px; box-shadow: ${tokens.shadow.card};
-`;
-
-const TtTime = styled.div`
-  color: ${tokens.text.muted}; margin-bottom: 6px; font-size: 11px;
-`;
-
-const TtRow = styled.div<{ $c: string }>`
-  display: flex; justify-content: space-between; gap: 16px;
-  color: ${({ $c }) => $c}; line-height: 1.8;
-`;
-
-// ── Metric bar chart ──────────────────────────────────────
 const MetricBars = styled.div`
   display: flex; flex-direction: column; gap: 20px;
 `;
@@ -764,22 +591,23 @@ const MetricBarItem = styled.div`
 `;
 
 const MetricBarTrack = styled.div`
-  flex: 1; height: 8px; border-radius: 4px;
+  flex: 1; height: 6px; border-radius: 3px;
   background: ${tokens.bg.elevated}; overflow: hidden;
 `;
 
 const MetricBarFill = styled.div<{ $pct: number; $c: string }>`
-  height: 100%; border-radius: 4px;
+  height: 100%;
   width: ${({ $pct }) => $pct}%;
   background: ${({ $c }) => $c};
+  border-radius: 3px;
   transition: width 0.4s ease;
 `;
 
-const MetricBarValue = styled.div<{ $c: string }>`
-  font-size: 13px; font-weight: 600; color: ${({ $c }) => $c};
+const MetricBarValue = styled.span<{ $c: string }>`
+  font-size: 12px; font-weight: 600; color: ${({ $c }) => $c};
   min-width: 60px; text-align: right;
 `;
 
-const MetricBarName = styled.div`
-  font-size: 11px; color: ${tokens.text.muted}; min-width: 28px;
+const MetricBarName = styled.span`
+  font-size: 11px; color: ${tokens.text.muted}; min-width: 24px;
 `;

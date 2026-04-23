@@ -1,18 +1,13 @@
 import styled from 'styled-components';
 import {
-  ResponsiveContainer,
-  Area,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ComposedChart,
-  ReferenceLine,
+  ResponsiveContainer, Area, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip,
+  ComposedChart, ReferenceLine,
 } from 'recharts';
 import { tokens } from '../styles/GlobalStyle';
 import type { DiveRecord } from '../types/dive';
 import { useMemo } from 'react';
+import { TtBox, TtTime, TtRow } from './ui/ChartTooltip';
 
 interface Props {
   records: DiveRecord[];
@@ -28,31 +23,28 @@ interface ChartPoint {
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
   const depth = payload.find((p: any) => p.dataKey === 'depth');
-  const hr = payload.find((p: any) => p.dataKey === 'hr');
+  const hr    = payload.find((p: any) => p.dataKey === 'hr');
+  const total = Number(label);
+  const h     = Math.floor(total / 60);
+  const m     = Math.floor(total % 60);
+  const s     = Math.round((total % 1) * 60);
+  const timeLabel = h > 0 ? `${h}시간 ${m}분 ${s}초` : `${m}분 ${s}초`;
   return (
-    <TooltipBox>
-      <TtTime>{(() => {
-        const total = Number(label);
-        const h = Math.floor(total / 60);
-        const m = Math.floor(total % 60);
-        const s = Math.round((total % 1) * 60);
-        return h > 0
-          ? `${h}시간 ${m}분 ${s}초`
-          : `${m}분 ${s}초`;
-      })()}</TtTime>
+    <TtBox>
+      <TtTime>{timeLabel}</TtTime>
       {depth && (
-        <TtRow $color={tokens.chart.depth}>
+        <TtRow $c={tokens.chart.depth}>
           <span>수심</span>
           <strong>{depth.value.toFixed(1)} m</strong>
         </TtRow>
       )}
       {hr && hr.value != null && (
-        <TtRow $color={tokens.chart.hr}>
+        <TtRow $c={tokens.chart.hr}>
           <span>심박수</span>
           <strong>{hr.value} bpm</strong>
         </TtRow>
       )}
-    </TooltipBox>
+    </TtBox>
   );
 };
 
@@ -246,25 +238,3 @@ const AxisLabel = styled.span<{ $color: string }>`
   letter-spacing: 0.04em;
 `;
 
-const TooltipBox = styled.div`
-  background: ${tokens.bg.elevated};
-  border: 1px solid ${tokens.border.default};
-  border-radius: ${tokens.radius.md};
-  padding: 10px 14px;
-  font-size: 12px;
-  box-shadow: ${tokens.shadow.card};
-`;
-
-const TtTime = styled.div`
-  color: ${tokens.text.muted};
-  margin-bottom: 6px;
-  font-size: 11px;
-`;
-
-const TtRow = styled.div<{ $color: string }>`
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  color: ${({ $color }) => $color};
-  line-height: 1.8;
-`;
