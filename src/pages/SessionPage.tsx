@@ -101,7 +101,7 @@ export default function SessionPage() {
         </MetricGrid>
 
         {/* ── Dive Profile Chart ── */}
-        <DiveProfileChart records={records} />
+        <DiveProfileChart records={records} dives={dives} />
 
         {/* ── Dive Table ── */}
         <DiveTable dives={dives} />

@@ -5,33 +5,68 @@ import {
   ComposedChart, ReferenceLine,
 } from 'recharts';
 import { tokens } from '../styles/GlobalStyle';
-import type { DiveRecord } from '../types/dive';
-import { useMemo } from 'react';
+import type { DetectedDive, DiveRecord } from '../types/dive';
+import { useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { TtBox, TtTime, TtRow } from './ui/ChartTooltip';
 
 interface Props {
   records: DiveRecord[];
+  dives?:  DetectedDive[];
 }
 
 interface ChartPoint {
-  t: number;         // elapsed minutes
+  t: number;         // elapsed minutes from session start
   depth: number;     // m (positive)
   hr: number | null;
 }
 
-// Custom tooltip
-const CustomTooltip = ({ active, payload, label }: any) => {
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Find which dive (if any) contains the given elapsed-minutes value. */
+function findActiveDive(
+  tMin: number,
+  dives: DetectedDive[],
+): DetectedDive | undefined {
+  return dives.find((dive) => {
+    const startMin = dive.records[0].elapsedSeconds / 60;
+    const endMin   = dive.records[dive.records.length - 1].elapsedSeconds / 60;
+    return tMin >= startMin && tMin <= endMin;
+  });
+}
+
+// ── Custom tooltip ─────────────────────────────────────────────────────────────
+const CustomTooltip = ({
+  active, payload, label, dives,
+}: {
+  active?: boolean;
+  payload?: any[];
+  label?: any;
+  dives?: DetectedDive[];
+}) => {
   if (!active || !payload?.length) return null;
+
   const depth = payload.find((p: any) => p.dataKey === 'depth');
   const hr    = payload.find((p: any) => p.dataKey === 'hr');
-  const total = Number(label);
-  const h     = Math.floor(total / 60);
-  const m     = Math.floor(total % 60);
-  const s     = Math.round((total % 1) * 60);
+  const tMin  = Number(label);
+
+  const activeDive = dives ? findActiveDive(tMin, dives) : undefined;
+
+  const total = tMin * 60;           // total seconds
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = Math.round(total % 60);
   const timeLabel = h > 0 ? `${h}시간 ${m}분 ${s}초` : `${m}분 ${s}초`;
+
   return (
     <TtBox>
       <TtTime>{timeLabel}</TtTime>
+      {activeDive && (
+        <DiveBadge>
+          🤿 다이브 #{activeDive.index + 1}
+          <ClickHint>좌클릭 → 상세</ClickHint>
+        </DiveBadge>
+      )}
       {depth && (
         <TtRow $c={tokens.chart.depth}>
           <span>수심</span>
@@ -48,21 +83,50 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export function DiveProfileChart({ records }: Props) {
+// ── Component ──────────────────────────────────────────────────────────────────
+export function DiveProfileChart({ records, dives }: Props) {
+  const navigate  = useNavigate();
+  const activeTRef = useRef<number | null>(null); // current hovered x value (minutes)
+
   // Downsample to every 5 seconds for performance
   const data = useMemo<ChartPoint[]>(() => {
     return records
       .filter((_, i) => i % 5 === 0)
       .map((r) => ({
-        t: parseFloat((r.elapsedSeconds / 60).toFixed(2)),
+        t:     parseFloat((r.elapsedSeconds / 60).toFixed(2)),
         depth: parseFloat(r.depthM.toFixed(2)),
-        hr: r.heartRate,
+        hr:    r.heartRate,
       }));
   }, [records]);
 
   const maxDepth = useMemo(
     () => Math.ceil(Math.max(...records.map((r) => r.depthM)) + 2),
-    [records]
+    [records],
+  );
+
+  // Dive boundary reference lines (start of each dive, for visual context)
+  const diveBoundaries = useMemo(() => {
+    if (!dives) return [];
+    return dives.flatMap((dive) => [
+      {
+        key: `start-${dive.index}`,
+        t:   dive.records[0].elapsedSeconds / 60,
+      },
+    ]);
+  }, [dives]);
+
+  // ── Left-click: navigate to dive detail ──────────────────────────────────
+  const handleOnClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (activeTRef.current == null || !dives) return;
+    const dive = findActiveDive(activeTRef.current, dives);
+    if (dive) navigate(`/dive/${dive.index}`);
+  };
+
+  // Tooltip renderer as a closure so it captures `dives` without extra prop drilling
+  const tooltipContent = useMemo(
+    () => (props: any) => <CustomTooltip {...props} dives={dives} />,
+    [dives],
   );
 
   return (
@@ -74,13 +138,24 @@ export function DiveProfileChart({ records }: Props) {
           <span>수심</span>
           <Dot $color={tokens.chart.hr} />
           <span>심박수</span>
+          {dives && dives.length > 0 && (
+            <ContextHint>다이브 구간 좌클릭 → 상세</ContextHint>
+          )}
         </Legend2>
       </Header>
-      <ChartArea>
+
+      <ChartArea onClick={handleOnClick}>
         <ResponsiveContainer width="100%" height={320}>
           <ComposedChart
             data={data}
             margin={{ top: 8, right: 16, bottom: 0, left: 0 }}
+            onMouseMove={(state) => {
+              // Track the currently hovered x (activeLabel is the t value)
+              if (state?.activeLabel != null) {
+                activeTRef.current = Number(state.activeLabel);
+              }
+            }}
+            onMouseLeave={() => { activeTRef.current = null; }}
           >
             <defs>
               <linearGradient id="depthGrad" x1="0" y1="0" x2="0" y2="1">
@@ -100,9 +175,9 @@ export function DiveProfileChart({ records }: Props) {
               type="number"
               domain={['dataMin', 'dataMax']}
               tickFormatter={(v) => {
-                const total = Math.round(v);
-                const h = Math.floor(total / 60);
-                const m = total % 60;
+                const total = Math.round(v * 60);
+                const h = Math.floor(total / 3600);
+                const m = Math.floor((total % 3600) / 60);
                 return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
               }}
               tick={{ fill: tokens.text.muted, fontSize: 11 }}
@@ -136,7 +211,7 @@ export function DiveProfileChart({ records }: Props) {
               width={36}
             />
 
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={tooltipContent} />
 
             {/* Water surface reference */}
             <ReferenceLine
@@ -145,6 +220,18 @@ export function DiveProfileChart({ records }: Props) {
               stroke={tokens.border.default}
               strokeDasharray="4 4"
             />
+
+            {/* Dive start markers */}
+            {diveBoundaries.map(({ key, t }) => (
+              <ReferenceLine
+                key={key}
+                yAxisId="depth"
+                x={t}
+                stroke={tokens.chart.depth}
+                strokeDasharray="3 4"
+                strokeOpacity={0.35}
+              />
+            ))}
 
             <Area
               yAxisId="depth"
@@ -181,6 +268,8 @@ export function DiveProfileChart({ records }: Props) {
     </Wrapper>
   );
 }
+
+// ── Styled components ──────────────────────────────────────────────────────────
 
 const Wrapper = styled.div`
   background: ${tokens.bg.surface};
@@ -220,8 +309,15 @@ const Dot = styled.span<{ $color: string }>`
   background: ${({ $color }) => $color};
 `;
 
+const ContextHint = styled.span`
+  font-size: 10px;
+  color: ${tokens.text.muted};
+  opacity: 0.7;
+  margin-left: 4px;
+`;
+
 const ChartArea = styled.div`
-  /* recharts needs explicit height container */
+  cursor: default;
 `;
 
 const AxisLabels = styled.div`
@@ -238,3 +334,26 @@ const AxisLabel = styled.span<{ $color: string }>`
   letter-spacing: 0.04em;
 `;
 
+// ── Tooltip extras ─────────────────────────────────────────────────────────────
+
+const DiveBadge = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: ${tokens.accent.cyan};
+  background: ${tokens.accent.cyan}14;
+  border: 1px solid ${tokens.accent.cyan}33;
+  border-radius: 6px;
+  padding: 3px 8px;
+  margin-bottom: 6px;
+`;
+
+const ClickHint = styled.span`
+  font-size: 9px;
+  font-weight: 400;
+  color: ${tokens.text.muted};
+  letter-spacing: 0.03em;
+`;
