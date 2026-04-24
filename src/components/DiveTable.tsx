@@ -18,6 +18,9 @@ function surfaceInterval(dives: DetectedDive[], idx: number): number | null {
 export function DiveTable({ dives }: Props) {
   const navigate = useNavigate();
 
+  const deepestIdx  = dives.reduce((b, d, i) => d.maxDepthM       > dives[b].maxDepthM       ? i : b, 0);
+  const longestIdx  = dives.reduce((b, d, i) => d.durationSeconds > dives[b].durationSeconds ? i : b, 0);
+
   return (
     <Wrapper>
       <Header>
@@ -45,9 +48,18 @@ export function DiveTable({ dives }: Props) {
             </tr>
           </thead>
           <tbody>
-            {dives.map((dive) => (
-              <Tr key={dive.index} onClick={() => navigate(`/dive/${dive.index}`)}>
-                <Td $muted>{dive.index + 1}</Td>
+            {dives.map((dive) => {
+              const isDeepest  = dive.index === deepestIdx;
+              const isLongest  = dive.index === longestIdx;
+              return (
+              <Tr key={dive.index} $highlight={isDeepest || isLongest} onClick={() => navigate(`/dive/${dive.index}`)}>
+                <Td $muted>
+                  <IndexCell>
+                    {dive.index + 1}
+                    {isDeepest && <RowBadge $color={tokens.accent.cyan}>최대 수심</RowBadge>}
+                    {isLongest && <RowBadge $color={tokens.accent.teal}>최장 시간</RowBadge>}
+                  </IndexCell>
+                </Td>
                 <Td>{formatTime(dive.startTime)}</Td>
                 <Td>{formatDuration(dive.durationSeconds)}</Td>
                 <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
@@ -75,7 +87,8 @@ export function DiveTable({ dives }: Props) {
                   <Arrow>›</Arrow>
                 </Td>
               </Tr>
-            ))}
+            );
+            })}
           </tbody>
         </Table>
       </TableWrapper>
@@ -161,13 +174,33 @@ const accentColor = (a: AccentType) => {
   return tokens.text.primary;
 };
 
-const Tr = styled.tr`
+const Tr = styled.tr<{ $highlight?: boolean }>`
   border-bottom: 1px solid ${tokens.border.subtle};
   cursor: pointer;
   transition: background 0.12s;
+  ${({ $highlight }) => $highlight && `background: ${tokens.bg.elevated}88;`}
 
   &:last-child { border-bottom: none; }
   &:hover { background: ${tokens.bg.elevated}; }
+`;
+
+const IndexCell = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+`;
+
+const RowBadge = styled.span<{ $color: string }>`
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: ${({ $color }) => $color}1a;
+  color: ${({ $color }) => $color};
+  border: 1px solid ${({ $color }) => $color}44;
+  white-space: nowrap;
 `;
 
 const Td = styled.td<{ $muted?: boolean; $accent?: AccentType }>`
