@@ -5,8 +5,7 @@ import { hrStatus } from '../utils/chartUtils';
 import type { DetectedDive, DiveSession } from '../types/dive';
 
 // Chart colours needed here
-const C_HR   = '#f97316'; // orange
-const C_TEMP = '#a78bfa'; // violet
+const C_HR = '#f97316'; // orange
 
 interface Props {
   dive:    DetectedDive;
@@ -105,12 +104,6 @@ export function DiveSummaryCard({ dive, diveIdx, session }: Props) {
             </Metric>
           );
         })()}
-        {dive.avgTempC != null && (
-          <Metric>
-            <MetricLabel>평균 수온</MetricLabel>
-            <MetricValue $c={C_TEMP}>{dive.avgTempC}°C</MetricValue>
-          </Metric>
-        )}
         {surfaceAfter != null && (
           <Metric>
             <MetricLabel>후 표면 인터벌</MetricLabel>

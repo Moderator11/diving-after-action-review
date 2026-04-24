@@ -8,6 +8,13 @@ interface Props {
   dives: DetectedDive[];
 }
 
+function surfaceInterval(dives: DetectedDive[], idx: number): number | null {
+  if (idx === 0) return null;
+  const prev    = dives[idx - 1];
+  const prevEnd = prev.records[prev.records.length - 1].timestamp;
+  return (dives[idx].startTime.getTime() - prevEnd.getTime()) / 1000;
+}
+
 export function DiveTable({ dives }: Props) {
   const navigate = useNavigate();
 
@@ -27,6 +34,7 @@ export function DiveTable({ dives }: Props) {
               <Th>시작 시각</Th>
               <Th>총 시간</Th>
               <Th>잠수 시간</Th>
+              <Th>표면 시간</Th>
               <Th>최대 수심</Th>
               <Th>평균 수심</Th>
               <Th>최대 하강</Th>
@@ -43,6 +51,12 @@ export function DiveTable({ dives }: Props) {
                 <Td>{formatTime(dive.startTime)}</Td>
                 <Td>{formatDuration(dive.durationSeconds)}</Td>
                 <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
+                <Td $muted>
+                  {(() => {
+                    const s = surfaceInterval(dives, dive.index);
+                    return s != null ? formatDuration(s) : '-';
+                  })()}
+                </Td>
                 <Td $accent="cyan">{dive.maxDepthM.toFixed(1)} m</Td>
                 <Td>{dive.avgDepthM.toFixed(1)} m</Td>
                 <Td $accent="descent">
