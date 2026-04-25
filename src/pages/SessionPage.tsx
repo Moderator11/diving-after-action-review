@@ -4,13 +4,14 @@ import { useRequireSession } from '../hooks/useRequireSession';
 import { MetricCard } from '../components/MetricCard';
 import { DiveProfileChart } from '../components/DiveProfileChart';
 import { DiveTable } from '../components/DiveTable';
+import { AidaIntervalCard } from '../components/AidaIntervalCard';
 import { formatDuration } from '../utils/parseFit';
 import { PageEl } from '../components/layout/TopBarPrimitives';
 import { TopBar } from '../components/layout/TopBar';
 import { Footer } from '../components/layout/Footer';
 
 export default function SessionPage() {
-  const session  = useRequireSession();
+  const session = useRequireSession();
 
   if (!session) return null;
 
@@ -32,48 +33,12 @@ export default function SessionPage() {
 
         {/* ── Metric cards ── */}
         <MetricGrid>
-          <MetricCard
-            label="최대 수심"
-            value={stats.maxDepthM.toFixed(1)}
-            unit="m"
-            icon="🎯"
-            accent="cyan"
-          />
-          <MetricCard
-            label="총 다이브"
-            value={stats.totalDives}
-            unit="회"
-            icon="🤿"
-            accent="blue"
-          />
-          <MetricCard
-            label="가장 긴 다이브"
-            value={formatDuration(stats.longestDiveSeconds)}
-            icon="⏱️"
-            accent="teal"
-          />
-          <MetricCard
-            label="최고 심박수"
-            value={stats.maxHR ?? '-'}
-            unit={stats.maxHR ? 'bpm' : ''}
-            icon="❤️"
-            accent="danger"
-          />
-          <MetricCard
-            label="소모 칼로리"
-            value={stats.totalCalories}
-            unit="kcal"
-            icon="🔥"
-            accent="indigo"
-          />
-          <MetricCard
-            label="수온"
-            value={stats.avgWaterTempC ?? '-'}
-            unit={stats.avgWaterTempC ? '°C' : ''}
-            icon="🌡️"
-            accent="teal"
-            sub="세션 평균"
-          />
+          <MetricCard label="최대 수심"     value={stats.maxDepthM.toFixed(1)} unit="m"   icon="🎯" accent="cyan"   />
+          <MetricCard label="총 다이브"     value={stats.totalDives}           unit="회"  icon="🤿" accent="blue"   />
+          <MetricCard label="가장 긴 다이브" value={formatDuration(stats.longestDiveSeconds)}      icon="⏱️" accent="teal"   />
+          <MetricCard label="최고 심박수"   value={stats.maxHR ?? '-'}         unit={stats.maxHR ? 'bpm' : ''} icon="❤️" accent="danger" />
+          <MetricCard label="소모 칼로리"   value={stats.totalCalories}        unit="kcal" icon="🔥" accent="indigo" />
+          <MetricCard label="수온"          value={stats.avgWaterTempC ?? '-'} unit={stats.avgWaterTempC ? '°C' : ''} icon="🌡️" accent="teal" sub="세션 평균" />
         </MetricGrid>
 
         {/* ── Dive Profile Chart ── */}
@@ -81,12 +46,14 @@ export default function SessionPage() {
 
         {/* ── Dive Table ── */}
         <DiveTable dives={dives} />
+        
+        {/* ── AIDA Surface Interval Analysis ── */}
+        <AidaIntervalCard dives={dives} />
       </Content>
       <Footer />
     </PageEl>
   );
 }
-
 
 const Content = styled.main`
   flex: 1;

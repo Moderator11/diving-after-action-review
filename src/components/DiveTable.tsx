@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { tokens } from '../styles/GlobalStyle';
 import type { DetectedDive } from '../types/dive';
 import { formatDuration } from '../utils/parseFit';
+import { calcAidaInterval } from '../utils/aidaInterval';
 import { useDiveSession } from '../store/DiveContext';
 import { StarBtn } from './StarBtn';
 
@@ -80,10 +81,30 @@ export function DiveTable({ dives }: Props) {
                   <Td>{formatTime(dive.startTime)}</Td>
                   <Td>{formatDuration(dive.durationSeconds)}</Td>
                   <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
-                  <Td $muted>
+                  <Td>
                     {(() => {
                       const s = surfaceInterval(dives, dive.index);
-                      return s != null ? formatDuration(s) : '-';
+                      if (s == null) return <span style={{ color: tokens.text.muted }}>-</span>;
+                      const prev = dives[dive.index - 1];
+                      const aida = calcAidaInterval(prev.maxDepthM, prev.durationSeconds);
+                      const ok   = s >= aida.requiredSec;
+                      return (
+                        <IntervalCell
+                          title={
+                            `필요: ${formatDuration(aida.requiredSec)} ` +
+                            `(${aida.bindingRule === 'depth' ? '수심 기준' : '시간 기준'})` +
+                            (aida.deepException ? ' · 심해 다이브 예외 적용' : '')
+                          }
+                        >
+                          <IntervalTime $ok={ok}>{formatDuration(s)}</IntervalTime>
+                          <AidaBadge $ok={ok}>
+                            {ok ? '✓ 충분' : `✗ ${formatDuration(aida.requiredSec - s)} 부족`}
+                          </AidaBadge>
+                          {aida.deepException && (
+                            <DeepBadge title="55m 초과 심해 다이브">심해</DeepBadge>
+                          )}
+                        </IntervalCell>
+                      );
                     })()}
                   </Td>
                   <Td $accent="cyan">{dive.maxDepthM.toFixed(1)} m</Td>
@@ -239,4 +260,40 @@ const Arrow = styled.span`
   color: ${tokens.text.muted};
   opacity: 0.5;
   line-height: 1;
+`;
+
+const IntervalCell = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+`;
+
+const IntervalTime = styled.span<{ $ok: boolean }>`
+  font-weight: 600;
+  color: ${({ $ok }) => $ok ? tokens.text.primary : tokens.accent.danger};
+  font-variant-numeric: tabular-nums;
+`;
+
+const AidaBadge = styled.span<{ $ok: boolean }>`
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 1px 7px;
+  border-radius: 99px;
+  white-space: nowrap;
+  background: ${({ $ok }) => $ok ? tokens.accent.teal + '18' : tokens.accent.danger + '18'};
+  color: ${({ $ok }) => $ok ? tokens.accent.teal : tokens.accent.danger};
+  border: 1px solid ${({ $ok }) => $ok ? tokens.accent.teal + '44' : tokens.accent.danger + '44'};
+`;
+
+const DeepBadge = styled.span`
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: #7c3aed18;
+  color: #a78bfa;
+  border: 1px solid #7c3aed44;
+  white-space: nowrap;
 `;
