@@ -13,6 +13,7 @@ import { TtBox, TtTime, TtRow } from '../components/ui/ChartTooltip';
 import { PageEl } from '../components/layout/TopBarPrimitives';
 import { TopBar } from '../components/layout/TopBar';
 import { Footer } from '../components/layout/Footer';
+import { StarBtn } from '../components/StarBtn';
 import type { DetectedDive } from '../types/dive';
 
 // ── Dive colour palette ───────────────────────────────────
@@ -134,6 +135,7 @@ export default function ComparePage() {
                       {dive.avgHR != null && ` · ${dive.avgHR}bpm`}
                     </DiveItemMeta>
                   </DiveItemInfo>
+                  <StarBtn diveIdx={idx} size="sm" />
                   <DiveCheck $selected={isSelected} $c={isSelected ? color : 'transparent'}>
                     {isSelected && '✓'}
                   </DiveCheck>

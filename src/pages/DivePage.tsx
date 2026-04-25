@@ -18,6 +18,8 @@ import type { DiveSpike } from '../utils/spikes';
 import { DiveSummaryCard } from '../components/DiveSummaryCard';
 import { SpikeEventLog }   from '../components/SpikeEventLog';
 import { VideoOverlay }    from '../components/VideoOverlay';
+import { MemoEditor }      from '../components/MemoEditor';
+import { StarBtn }         from '../components/StarBtn';
 import { TtBox, TtTime, TtRow } from '../components/ui/ChartTooltip';
 import { PageEl } from '../components/layout/TopBarPrimitives';
 import { TopBar } from '../components/layout/TopBar';
@@ -302,6 +304,7 @@ export default function DivePage() {
             ‹ 이전
           </NavButton>
           <DiveCounter>{diveIdx + 1} / {totalDives}</DiveCounter>
+          <StarBtn diveIdx={diveIdx} size="lg" />
           <NavButton disabled={diveIdx >= totalDives - 1} onClick={() => navigate(`/dive/${diveIdx + 1}`)}>
             다음 ›
           </NavButton>
@@ -494,6 +497,9 @@ export default function DivePage() {
           showHR={showHR} showDescent={showDescent}
           showAscent={showAscent} showEvents={showEvents}
         />
+
+        {/* ── Memo ── */}
+        <MemoEditor diveIndex={diveIdx} />
       </Content>
       <Footer />
     </PageEl>

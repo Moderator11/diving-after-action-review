@@ -3,6 +3,8 @@ import styled from 'styled-components';
 import { tokens } from '../styles/GlobalStyle';
 import type { DetectedDive } from '../types/dive';
 import { formatDuration } from '../utils/parseFit';
+import { useDiveSession } from '../store/DiveContext';
+import { StarBtn } from './StarBtn';
 
 interface Props {
   dives: DetectedDive[];
@@ -17,9 +19,10 @@ function surfaceInterval(dives: DetectedDive[], idx: number): number | null {
 
 export function DiveTable({ dives }: Props) {
   const navigate = useNavigate();
+  const { memos } = useDiveSession();
 
-  const deepestIdx  = dives.reduce((b, d, i) => d.maxDepthM       > dives[b].maxDepthM       ? i : b, 0);
-  const longestIdx  = dives.reduce((b, d, i) => d.durationSeconds > dives[b].durationSeconds ? i : b, 0);
+  const deepestIdx = dives.reduce((b, d, i) => d.maxDepthM       > dives[b].maxDepthM       ? i : b, 0);
+  const longestIdx = dives.reduce((b, d, i) => d.durationSeconds > dives[b].durationSeconds ? i : b, 0);
 
   return (
     <Wrapper>
@@ -33,6 +36,7 @@ export function DiveTable({ dives }: Props) {
         <Table>
           <thead>
             <tr>
+              <Th>★</Th>
               <Th>#</Th>
               <Th>시작 시각</Th>
               <Th>총 시간</Th>
@@ -44,50 +48,62 @@ export function DiveTable({ dives }: Props) {
               <Th>최대 상승</Th>
               <Th>최고 HR</Th>
               <Th>수온</Th>
+              <Th>메모</Th>
               <Th></Th>
             </tr>
           </thead>
           <tbody>
             {dives.map((dive) => {
-              const isDeepest  = dive.index === deepestIdx;
-              const isLongest  = dive.index === longestIdx;
+              const isDeepest = dive.index === deepestIdx;
+              const isLongest = dive.index === longestIdx;
+              const hasMemo   = !!(memos[dive.index]?.trim());
               return (
-              <Tr key={dive.index} $highlight={isDeepest || isLongest} onClick={() => navigate(`/dive/${dive.index}`)}>
-                <Td $muted>
-                  <IndexCell>
-                    {dive.index + 1}
-                    {isDeepest && <RowBadge $color={tokens.accent.cyan}>최대 수심</RowBadge>}
-                    {isLongest && <RowBadge $color={tokens.accent.teal}>최장 시간</RowBadge>}
-                  </IndexCell>
-                </Td>
-                <Td>{formatTime(dive.startTime)}</Td>
-                <Td>{formatDuration(dive.durationSeconds)}</Td>
-                <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
-                <Td $muted>
-                  {(() => {
-                    const s = surfaceInterval(dives, dive.index);
-                    return s != null ? formatDuration(s) : '-';
-                  })()}
-                </Td>
-                <Td $accent="cyan">{dive.maxDepthM.toFixed(1)} m</Td>
-                <Td>{dive.avgDepthM.toFixed(1)} m</Td>
-                <Td $accent="descent">
-                  {dive.maxDescentRateMps > 0
-                    ? `${dive.maxDescentRateMps.toFixed(2)} m/s`
-                    : '-'}
-                </Td>
-                <Td $accent="ascent">
-                  {dive.maxAscentRateMps > 0
-                    ? `${dive.maxAscentRateMps.toFixed(2)} m/s`
-                    : '-'}
-                </Td>
-                <Td>{dive.maxHR != null ? `${dive.maxHR} bpm` : '-'}</Td>
-                <Td>{dive.avgTempC != null ? `${dive.avgTempC} °C` : '-'}</Td>
-                <Td>
-                  <Arrow>›</Arrow>
-                </Td>
-              </Tr>
-            );
+                <Tr
+                  key={dive.index}
+                  $highlight={isDeepest || isLongest}
+                  onClick={() => navigate(`/dive/${dive.index}`)}
+                >
+                  {/* Star */}
+                  <Td $center>
+                    <StarBtn diveIdx={dive.index} size="sm" />
+                  </Td>
+
+                  {/* Index + badges */}
+                  <Td $muted>
+                    <IndexCell>
+                      {dive.index + 1}
+                      {isDeepest && <RowBadge $color={tokens.accent.cyan}>최대 수심</RowBadge>}
+                      {isLongest && <RowBadge $color={tokens.accent.teal}>최장 시간</RowBadge>}
+                    </IndexCell>
+                  </Td>
+
+                  <Td>{formatTime(dive.startTime)}</Td>
+                  <Td>{formatDuration(dive.durationSeconds)}</Td>
+                  <Td $accent="teal">{formatDuration(dive.bottomTimeSeconds)}</Td>
+                  <Td $muted>
+                    {(() => {
+                      const s = surfaceInterval(dives, dive.index);
+                      return s != null ? formatDuration(s) : '-';
+                    })()}
+                  </Td>
+                  <Td $accent="cyan">{dive.maxDepthM.toFixed(1)} m</Td>
+                  <Td>{dive.avgDepthM.toFixed(1)} m</Td>
+                  <Td $accent="descent">
+                    {dive.maxDescentRateMps > 0 ? `${dive.maxDescentRateMps.toFixed(2)} m/s` : '-'}
+                  </Td>
+                  <Td $accent="ascent">
+                    {dive.maxAscentRateMps > 0 ? `${dive.maxAscentRateMps.toFixed(2)} m/s` : '-'}
+                  </Td>
+                  <Td>{dive.maxHR != null ? `${dive.maxHR} bpm` : '-'}</Td>
+                  <Td>{dive.avgTempC != null ? `${dive.avgTempC} °C` : '-'}</Td>
+                  <Td $center>
+                    {hasMemo && <MemoIcon title={memos[dive.index]}>📝</MemoIcon>}
+                  </Td>
+                  <Td>
+                    <Arrow>›</Arrow>
+                  </Td>
+                </Tr>
+              );
             })}
           </tbody>
         </Table>
@@ -103,6 +119,7 @@ function formatTime(date: Date): string {
 }
 
 /* ── Styled components ───────────────────────────────── */
+
 const Wrapper = styled.div`
   background: ${tokens.bg.surface};
   border: 1px solid ${tokens.border.subtle};
@@ -167,10 +184,10 @@ const Th = styled.th`
 type AccentType = 'cyan' | 'teal' | 'descent' | 'ascent' | undefined;
 
 const accentColor = (a: AccentType) => {
-  if (a === 'cyan')    return tokens.chart.depth;       // #06b6d4
-  if (a === 'teal')    return tokens.accent.teal;       // #14b8a6
-  if (a === 'descent') return tokens.chart.hr;          // #f97316
-  if (a === 'ascent')  return '#10b981';                // emerald
+  if (a === 'cyan')    return tokens.chart.depth;
+  if (a === 'teal')    return tokens.accent.teal;
+  if (a === 'descent') return tokens.chart.hr;
+  if (a === 'ascent')  return '#10b981';
   return tokens.text.primary;
 };
 
@@ -179,7 +196,6 @@ const Tr = styled.tr<{ $highlight?: boolean }>`
   cursor: pointer;
   transition: background 0.12s;
   ${({ $highlight }) => $highlight && `background: ${tokens.bg.elevated}88;`}
-
   &:last-child { border-bottom: none; }
   &:hover { background: ${tokens.bg.elevated}; }
 `;
@@ -203,13 +219,19 @@ const RowBadge = styled.span<{ $color: string }>`
   white-space: nowrap;
 `;
 
-const Td = styled.td<{ $muted?: boolean; $accent?: AccentType }>`
+const Td = styled.td<{ $muted?: boolean; $accent?: AccentType; $center?: boolean }>`
   padding: 11px 12px;
   color: ${({ $muted, $accent }) =>
     $muted   ? tokens.text.muted
     : $accent ? accentColor($accent)
     : tokens.text.primary};
   font-weight: ${({ $accent }) => $accent ? '600' : '400'};
+  text-align: ${({ $center }) => $center ? 'center' : 'left'};
+`;
+
+const MemoIcon = styled.span`
+  font-size: 13px;
+  cursor: default;
 `;
 
 const Arrow = styled.span`
